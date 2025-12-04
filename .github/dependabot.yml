@@ -6,20 +6,17 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     labels:
       - "dependencies"
       - "javascript"
     commit-message:
       prefix: "chore(deps)"
     groups:
-      react:
+      production:
+        dependency-type: "production"
         patterns:
-          - "react*"
-          - "@types/react*"
-      radix:
-        patterns:
-          - "@radix-ui/*"
+          - "*"
       dev-dependencies:
         dependency-type: "development"
         patterns:
@@ -37,6 +34,10 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   # Docker
   - package-ecosystem: "docker"
@@ -50,3 +51,7 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      docker:
+        patterns:
+          - "*"
