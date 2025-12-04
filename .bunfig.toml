@@ -1,0 +1,7 @@
+# Bun configuration for Sartor UI
+[install]
+# Use npm registry
+registry = "https://registry.npmjs.org/"
+
+# Auto-install peer dependencies
+peer = true
