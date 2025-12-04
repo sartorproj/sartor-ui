@@ -334,6 +334,7 @@ export default function Analytics() {
                     verticalAlign="bottom"
                     formatter={(value, entry) => (
                       <span className="text-sm">
+                        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                         {value}: {(entry.payload as any)?.value?.toFixed(1)}%
                       </span>
                     )}

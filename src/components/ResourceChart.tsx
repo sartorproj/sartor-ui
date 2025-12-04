@@ -56,6 +56,50 @@ const formatResourceValue = (value: number | undefined, title: string): string =
   }
 }
 
+interface BarTooltipPayloadEntry {
+  dataKey: string
+  value: number
+  fill: string
+}
+
+interface CustomBarTooltipProps {
+  active?: boolean
+  payload?: BarTooltipPayloadEntry[]
+  label?: string
+  chartConfig: ChartConfig
+  title: string
+}
+
+// Custom tooltip for bar chart - defined outside component to avoid recreation during render
+function CustomBarTooltip({ active, payload, label, chartConfig, title }: CustomBarTooltipProps) {
+  if (!active || !payload?.length) return null
+  
+  return (
+    <div className="rounded-lg border bg-background p-3 shadow-xl">
+      <div className="font-medium text-sm mb-2 border-b pb-2">{label}</div>
+      <div className="grid gap-1.5 text-xs">
+        {payload.map((entry: BarTooltipPayloadEntry, index: number) => {
+          const config = chartConfig[entry.dataKey as keyof typeof chartConfig]
+          return (
+            <div key={index} className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <div 
+                  className="w-3 h-3 rounded-sm"
+                  style={{ backgroundColor: config?.color || entry.fill }}
+                />
+                <span className="text-muted-foreground">{config?.label || entry.dataKey}</span>
+              </div>
+              <span className="font-mono font-medium">
+                {formatResourceValue(entry.value, title)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function ResourceChart({
   title,
   data,
@@ -89,36 +133,6 @@ export function ResourceChart({
     const hasRecommended = data.some((d) => d.recommended !== undefined)
     const hasLimit = data.some((d) => d.limit !== undefined)
 
-    // Custom tooltip for bar chart
-    const CustomBarTooltip = ({ active, payload, label }: any) => {
-      if (!active || !payload?.length) return null
-      
-      return (
-        <div className="rounded-lg border bg-background p-3 shadow-xl">
-          <div className="font-medium text-sm mb-2 border-b pb-2">{label}</div>
-          <div className="grid gap-1.5 text-xs">
-            {payload.map((entry: any, index: number) => {
-              const config = chartConfig[entry.dataKey as keyof typeof chartConfig]
-              return (
-                <div key={index} className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-2">
-                    <div 
-                      className="w-3 h-3 rounded-sm"
-                      style={{ backgroundColor: config?.color || entry.fill }}
-                    />
-                    <span className="text-muted-foreground">{config?.label || entry.dataKey}</span>
-                  </div>
-                  <span className="font-mono font-medium">
-                    {formatResourceValue(entry.value, title)}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )
-    }
-
     return (
       <Card>
         <CardHeader>
@@ -151,7 +165,15 @@ export function ResourceChart({
                 tickFormatter={(value) => formatResourceValue(value, title)}
               />
               <Tooltip 
-                content={<CustomBarTooltip />}
+                content={({ active, payload, label }) => (
+                  <CustomBarTooltip 
+                    active={active} 
+                    payload={payload as BarTooltipPayloadEntry[]} 
+                    label={label as string} 
+                    chartConfig={chartConfig} 
+                    title={title} 
+                  />
+                )}
                 cursor={false}
               />
               <ChartLegend content={<ChartLegendContent />} />
@@ -323,7 +345,7 @@ export function ResourceChart({
                 content={
                   <ChartTooltipContent
                     indicator="dot"
-                    labelFormatter={(value) => {
+                    labelFormatter={(value: string | number) => {
                       return new Date(Number(value) * 1000).toLocaleString()
                     }}
                   />
@@ -454,7 +476,7 @@ export function ResourceChart({
               content={
                 <ChartTooltipContent
                   indicator="dot"
-                  labelFormatter={(value) => String(value)}
+                  labelFormatter={(value: string | number) => String(value)}
                 />
               }
             />

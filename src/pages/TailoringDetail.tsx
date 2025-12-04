@@ -106,6 +106,7 @@ export default function TailoringDetail() {
   };
 
   // Helper to get resource lines for charts based on container and FitProfile
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const getResourceLines = (container: any, resourceType: 'cpu' | 'memory'): ResourceLine[] => {
     const lines: ResourceLine[] = [];
     

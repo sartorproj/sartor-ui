@@ -124,6 +124,7 @@ export function MetricsChart({
       .sort(([a], [b]) => a - b)
       .map(([timestamp, group]) => {
         const avgValue = group.values.reduce((a, b) => a + b, 0) / group.values.length
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result: Record<string, any> = {
           timestamp,
           usage: avgValue,
@@ -222,16 +223,20 @@ export function MetricsChart({
   const hasResourceLines = resourceLines.length > 0
   const hasTimeSeriesData = chartData && chartData.length > 0
   
+  // Get current timestamp once for placeholder data generation
+  const [placeholderTimestamp] = React.useState(() => Math.floor(Date.now() / 1000))
+  
   // Generate placeholder data if we have resource lines but no time series
   const displayData = React.useMemo(() => {
     if (hasTimeSeriesData) return chartData
     if (!hasResourceLines) return []
     
     // Generate placeholder timestamps (last hour with 12 points)
-    const now = Math.floor(Date.now() / 1000)
-    const placeholderData = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const placeholderData: any[] = []
     for (let i = 11; i >= 0; i--) {
-      const timestamp = now - (i * 5 * 60) // 5 minute intervals
+      const timestamp = placeholderTimestamp - (i * 5 * 60) // 5 minute intervals
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const point: Record<string, any> = { timestamp }
       resourceLines.forEach((line) => {
         point[line.name] = line.value
@@ -239,7 +244,7 @@ export function MetricsChart({
       placeholderData.push(point)
     }
     return placeholderData
-  }, [chartData, hasTimeSeriesData, hasResourceLines, resourceLines])
+  }, [chartData, hasTimeSeriesData, hasResourceLines, resourceLines, placeholderTimestamp])
 
   if (displayData.length === 0 && !hasResourceLines) {
     return (

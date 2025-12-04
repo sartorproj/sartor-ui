@@ -123,10 +123,13 @@ export interface FitProfile {
     strategy: string;
     displayName?: string;
     description?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parameters?: Record<string, any> | { raw?: string };
     priority?: number;
     labels?: Record<string, string>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     safetyRailsOverride?: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resourceQuotaOverride?: any;
   };
   status?: {
@@ -149,7 +152,9 @@ export interface Strategy {
   name: string;
   displayName: string;
   description: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parametersSchema?: Record<string, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   exampleParameters?: Record<string, any>;
 }
 

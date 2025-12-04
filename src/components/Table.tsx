@@ -17,6 +17,7 @@ interface TableProps<T> {
   defaultSort?: { key: string; direction: 'asc' | 'desc' };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export default function Table<T extends Record<string, any>>({
   data,
   columns,

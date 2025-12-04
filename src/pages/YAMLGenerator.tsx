@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import * as React from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -38,6 +39,7 @@ export default function YAMLGenerator() {
   const [fitProfileDisplayName, setFitProfileDisplayName] = useState('');
   const [fitProfileDescription, setFitProfileDescription] = useState('');
   const [fitProfileParams, setFitProfileParams] = useState('{}');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [strategyParams, setStrategyParams] = useState<Record<string, any>>({});
 
   // Tailoring form state
@@ -52,21 +54,24 @@ export default function YAMLGenerator() {
   const [tailoringAnalysisWindow, setTailoringAnalysisWindow] = useState('168h');
   const [tailoringPaused, setTailoringPaused] = useState(false);
 
-  // Initialize strategy when strategies are loaded
-  useEffect(() => {
+  // Initialize strategy when strategies are loaded - only set default once on initial load
+  React.useEffect(() => {
     if (strategies && strategies.length > 0 && !fitProfileStrategy) {
       setFitProfileStrategy(strategies[0].name);
     }
-  }, [strategies, fitProfileStrategy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategies]);
 
   // Update parameters when strategy changes
-  useEffect(() => {
+  React.useEffect(() => {
     if (selectedStrategy?.exampleParameters) {
       setFitProfileParams(JSON.stringify(selectedStrategy.exampleParameters, null, 2));
       setStrategyParams(selectedStrategy.exampleParameters);
     }
-  }, [selectedStrategy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStrategy?.name]);
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const formatParamsAsYAML = (paramsObj: Record<string, any>, indent: string = '    '): string => {
     if (Object.keys(paramsObj).length === 0) {
       return `${indent}{}`;
@@ -123,10 +128,11 @@ export default function YAMLGenerator() {
       return '# Please fill in all required fields (marked with *)';
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let paramsObj: Record<string, any> = {};
     try {
       paramsObj = JSON.parse(fitProfileParams || '{}');
-    } catch (e) {
+    } catch {
       return '# Invalid JSON in parameters field. Please check your JSON syntax.';
     }
 
@@ -193,6 +199,7 @@ spec:
     return activeTab === 'fitprofile' ? generateFitProfileYAML() : generateTailoringYAML();
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renderStrategyParamInput = (key: string, schema: any, value: any, onChange: (value: any) => void) => {
     const paramType = schema?.type || (typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'boolean' : 'string');
     const description = schema?.description || '';
@@ -398,6 +405,7 @@ spec:
                     </p>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                     {selectedStrategy.parametersSchema?.properties && Object.entries(selectedStrategy.parametersSchema.properties as Record<string, any>).map(([key, schema]: [string, any]) => {
                       const currentValue = strategyParams[key] ?? schema.default;
                       return renderStrategyParamInput(

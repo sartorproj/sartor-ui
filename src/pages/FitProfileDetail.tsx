@@ -164,6 +164,7 @@ export default function FitProfileDetail() {
             {(() => {
               try {
                 // Try to parse parameters - could be raw JSON string or object
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 let params: any = fitProfile.spec.parameters;
                 
                 // If it's an object with a 'raw' property (RawExtension), parse it
@@ -207,7 +208,7 @@ export default function FitProfileDetail() {
                     {JSON.stringify(params, null, 2)}
                   </pre>
                 );
-              } catch (e) {
+              } catch {
                 // If parsing fails, show raw value
                 return (
                   <pre className="bg-muted p-4 rounded-lg overflow-x-auto text-sm">

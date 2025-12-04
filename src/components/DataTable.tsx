@@ -39,6 +39,7 @@ interface DataTableProps<T> {
   onRowClick?: (item: T) => void
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function DataTable<T extends Record<string, any>>({
   data,
   columns,
@@ -63,6 +64,7 @@ export function DataTable<T extends Record<string, any>>({
           const value = col.getFilterValue 
             ? col.getFilterValue(item) 
             : (col.key.includes('.') 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 ? col.key.split('.').reduce((obj, key) => obj?.[key], item as any) 
                 : item[col.key])
           if (value !== null && value !== undefined && value !== '') {
@@ -76,21 +78,24 @@ export function DataTable<T extends Record<string, any>>({
   }, [data, columns])
 
   // Helper to extract text from React nodes for search
-  const extractText = (node: React.ReactNode): string => {
-    if (typeof node === 'string' || typeof node === 'number') {
-      return String(node).toLowerCase()
-    }
-    if (React.isValidElement(node)) {
-      const props = node.props as { children?: React.ReactNode }
-      if (props?.children) {
-        return extractText(props.children)
+  const extractText = React.useCallback((node: React.ReactNode): string => {
+    const extractTextRecursive = (n: React.ReactNode): string => {
+      if (typeof n === 'string' || typeof n === 'number') {
+        return String(n).toLowerCase()
       }
+      if (React.isValidElement(n)) {
+        const props = n.props as { children?: React.ReactNode }
+        if (props?.children) {
+          return extractTextRecursive(props.children)
+        }
+      }
+      if (Array.isArray(n)) {
+        return n.map(extractTextRecursive).join(' ')
+      }
+      return ''
     }
-    if (Array.isArray(node)) {
-      return node.map(extractText).join(' ')
-    }
-    return ''
-  }
+    return extractTextRecursive(node)
+  }, [])
 
   const filteredAndSortedData = React.useMemo(() => {
     let filtered = [...data]
@@ -103,6 +108,7 @@ export function DataTable<T extends Record<string, any>>({
           const itemValue = col?.getFilterValue 
             ? col.getFilterValue(item)
             : (key.includes('.') 
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 ? key.split('.').reduce((obj, k) => obj?.[k], item as any) 
                 : item[key])
           return String(itemValue) === value
@@ -117,6 +123,7 @@ export function DataTable<T extends Record<string, any>>({
         // Search across all column keys
         return columns.some((col) => {
           const value = col.key.includes('.') 
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ? col.key.split('.').reduce((obj, k) => obj?.[k], item as any) 
             : item[col.key]
           if (value === null || value === undefined) return false
@@ -138,9 +145,11 @@ export function DataTable<T extends Record<string, any>>({
     if (sortConfig) {
       filtered.sort((a, b) => {
         const aValue = sortConfig.key.includes('.') 
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ? sortConfig.key.split('.').reduce((obj, k) => obj?.[k], a as any) 
           : a[sortConfig.key]
         const bValue = sortConfig.key.includes('.') 
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ? sortConfig.key.split('.').reduce((obj, k) => obj?.[k], b as any) 
           : b[sortConfig.key]
         
@@ -152,9 +161,9 @@ export function DataTable<T extends Record<string, any>>({
     }
 
     return filtered
-  }, [data, searchTerm, sortConfig, columns, searchable, filters])
+  }, [data, searchTerm, sortConfig, columns, searchable, filters, extractText])
 
-  const activeFilters = Object.entries(filters).filter(([_, value]) => value && value !== '__all__')
+  const activeFilters = Object.entries(filters).filter(([, value]) => value && value !== '__all__')
 
   const clearFilter = (key: string) => {
     setFilters(prev => {
