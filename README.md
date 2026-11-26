@@ -18,7 +18,7 @@ Modern React frontend for the Sartor Kubernetes resource optimization platform.
   ```bash
   curl -fsSL https://bun.sh/install | bash
   ```
-  Or use npm/node as fallback (Node.js 18+)
+  Or use npm/node as fallback (Node.js 22.22+)
 - Sartor API server running (default: http://localhost:8080)
 
 ### Installation
@@ -84,11 +84,11 @@ The image runs as UID 101 and supports `readOnlyRootFilesystem: true` when `/tmp
 
 - **Bun** - Package manager and runtime (faster than npm)
 - **React 19** - UI framework
-- **TypeScript 5.9** - Type safety
-- **Vite 7** - Build tool
-- **React Router 7** - Routing
+- **TypeScript 6.0** - Type safety
+- **Vite 8** - Build tool
+- **React Router 8** - Routing
 - **TanStack Query 5** - Data fetching and caching
-- **Tailwind CSS 3.4** - Styling
+- **Tailwind CSS 4** - Styling
 - **shadcn/ui** - Component library (Radix UI primitives)
 - **Recharts** - Resource usage charts and visualizations
 - **Axios** - HTTP client

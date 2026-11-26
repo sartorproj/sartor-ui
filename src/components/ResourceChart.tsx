@@ -168,7 +168,7 @@ export function ResourceChart({
                 content={({ active, payload, label }) => (
                   <CustomBarTooltip 
                     active={active} 
-                    payload={payload as BarTooltipPayloadEntry[]} 
+                    payload={payload as unknown as BarTooltipPayloadEntry[]} 
                     label={label as string} 
                     chartConfig={chartConfig} 
                     title={title} 

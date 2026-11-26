@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link } from 'react-router';
 import { apiClient } from '../lib/api';
 import type { FitProfile } from '../lib/api';
 import { ArrowLeft, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
