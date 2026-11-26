@@ -1,0 +1,14 @@
+# Allowlist for the generic leak-check patterns (private IPv4, private DNS hostnames).
+# Denylist entries can never be allowlisted. One entry per line:
+#   path:<glob>  ignore generic findings in matching paths (fnmatch; * also matches /)
+#   <string>     ignore this exact matched value (case-insensitive)
+# See docs/leakcheck.md.
+
+# Synthetic fixtures of the leak check's own tests.
+path:.github/scripts/test_leakcheck.py
+
+# Network addresses of the checked ranges, quoted in docs/leakcheck.md.
+10.0.0.0
+172.16.0.0
+192.168.0.0
+100.64.0.0
