@@ -55,10 +55,18 @@ bun run preview
 
 ## Configuration
 
-Set the following environment variables:
+By default the UI calls the API on its own origin (`/api/...`). In development, Vite proxies `/api` to http://localhost:8080; in the container image, nginx proxies it to `SARTOR_API_URL`.
 
-- `VITE_API_URL` - URL of the Sartor API server (default: http://localhost:8080)
-- `VITE_API_KEY` - Optional API key for authentication
+Build time (baked into the public JS bundle, so never put secrets here):
+
+- `VITE_API_URL` - Optional absolute URL of the Sartor API server, only if it is served from another origin (default: same origin)
+
+Container runtime (nginx image):
+
+- `SARTOR_API_URL` - Upstream for `/api/`, as `scheme://host:port` with no path (default: `http://sartor-server:8080`). nginx exits at startup if the host does not resolve.
+- `SARTOR_API_KEY` - Optional API key that nginx adds as `X-API-Key` on proxied requests; mount it from a Secret. Anyone who can reach the UI can use the API through this proxy, so put the UI behind authentication.
+
+The image runs as UID 101 (it also works with any non-root UID) and supports `readOnlyRootFilesystem: true` when `/tmp` is writable (for example an `emptyDir`).
 
 ## Tech Stack
 

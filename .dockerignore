@@ -1,0 +1,8 @@
+.git
+.github
+node_modules
+dist
+# Vite bakes VITE_* from .env files into the bundle.
+.env
+.env.*
+*.local
