@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+// Empty means same-origin: /api is proxied by nginx in the image and by Vite in dev.
+// The API key is never part of the bundle; nginx injects it server-side (SARTOR_API_KEY).
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -8,12 +10,6 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
-
-// Add API key if configured
-const apiKey = import.meta.env.VITE_API_KEY;
-if (apiKey) {
-  api.defaults.headers.common['X-API-Key'] = apiKey;
-}
 
 export interface TailoringSummary {
   name: string;
