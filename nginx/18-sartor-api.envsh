@@ -1,0 +1,33 @@
+#!/bin/sh
+# Sourced by /docker-entrypoint.sh before it renders /etc/nginx/templates into /tmp.
+# Exports the SARTOR_* values used by default.conf.template. Never exits: nginx must
+# start even when the API settings are missing or invalid (/api then returns 502).
+
+sartor_me=18-sartor-api.envsh
+
+# nginx's resolver needs explicit addresses; use the container's DNS servers.
+sartor_resolvers=$(awk 'BEGIN { ORS = " " } $1 == "nameserver" { if ($2 ~ ":") print "[" $2 "]"; else print $2 }' /etc/resolv.conf 2>/dev/null)
+sartor_resolvers="${sartor_resolvers% }"
+if [ -z "$sartor_resolvers" ]; then
+    echo "$sartor_me: no nameserver in /etc/resolv.conf, using 127.0.0.1" >&2
+    sartor_resolvers=127.0.0.1
+fi
+SARTOR_RESOLVERS="$sartor_resolvers"
+
+SARTOR_API_URL="${SARTOR_API_URL:-}"
+SARTOR_API_URL="${SARTOR_API_URL%/}"
+if [ -z "$SARTOR_API_URL" ]; then
+    echo "$sartor_me: SARTOR_API_URL is not set; /api/ will return 502" >&2
+elif ! printf '%s' "$SARTOR_API_URL" | grep -Eq '^https?://[][A-Za-z0-9.:-]+$'; then
+    echo "$sartor_me: SARTOR_API_URL must be scheme://host[:port] with no path; /api/ will return 502" >&2
+    SARTOR_API_URL=""
+fi
+
+SARTOR_API_KEY="${SARTOR_API_KEY:-}"
+if [ -n "$SARTOR_API_KEY" ] && ! printf '%s' "$SARTOR_API_KEY" | grep -Eq '^[A-Za-z0-9._~+/=-]+$'; then
+    echo "$sartor_me: SARTOR_API_KEY contains unsupported characters; not sending it" >&2
+    SARTOR_API_KEY=""
+fi
+
+export SARTOR_API_URL SARTOR_API_KEY SARTOR_RESOLVERS
+unset sartor_me sartor_resolvers
