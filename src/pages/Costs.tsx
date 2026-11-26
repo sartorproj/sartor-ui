@@ -323,7 +323,7 @@ export default function Costs() {
                       ))}
                     </Pie>
                     <Tooltip
-                      formatter={(value: number) => formatCurrency(value)}
+                      formatter={(value) => formatCurrency(Number(value))}
                       contentStyle={{
                         backgroundColor: 'hsl(var(--card))',
                         border: '1px solid hsl(var(--border))',
@@ -370,8 +370,8 @@ export default function Costs() {
                       tick={{ fontSize: 11 }}
                     />
                     <Tooltip
-                      formatter={(value: number, name: string) => [
-                        formatCurrency(value),
+                      formatter={(value, name) => [
+                        formatCurrency(Number(value)),
                         name === 'cpuCost' ? 'CPU' : name === 'ramCost' ? 'Memory' : 'Total',
                       ]}
                       contentStyle={{

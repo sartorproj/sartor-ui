@@ -1,4 +1,3 @@
-import * as React from 'react';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,7 +28,8 @@ export default function YAMLGenerator() {
   // FitProfile form state
   const [fitProfileName, setFitProfileName] = useState('');
   const [fitProfileNamespace, setFitProfileNamespace] = useState('default');
-  const [fitProfileStrategy, setFitProfileStrategy] = useState('');
+  const [chosenStrategy, setFitProfileStrategy] = useState('');
+  const fitProfileStrategy = chosenStrategy || strategies?.[0]?.name || '';
 
   const { data: selectedStrategy } = useQuery<Strategy>({
     queryKey: ['strategy', fitProfileStrategy],
@@ -56,22 +56,15 @@ export default function YAMLGenerator() {
   const [tailoringAnalysisWindow, setTailoringAnalysisWindow] = useState('168h');
   const [tailoringPaused, setTailoringPaused] = useState(false);
 
-  // Initialize strategy when strategies are loaded - only set default once on initial load
-  React.useEffect(() => {
-    if (strategies && strategies.length > 0 && !fitProfileStrategy) {
-      setFitProfileStrategy(strategies[0].name);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategies]);
-
-  // Update parameters when strategy changes
-  React.useEffect(() => {
-    if (selectedStrategy?.exampleParameters) {
+  // Reset parameters to the strategy's examples whenever a different strategy loads
+  const [paramsStrategy, setParamsStrategy] = useState<string>();
+  if (selectedStrategy && selectedStrategy.name !== paramsStrategy) {
+    setParamsStrategy(selectedStrategy.name);
+    if (selectedStrategy.exampleParameters) {
       setFitProfileParams(JSON.stringify(selectedStrategy.exampleParameters, null, 2));
       setStrategyParams(selectedStrategy.exampleParameters);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStrategy?.name]);
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const formatParamsAsYAML = (paramsObj: Record<string, any>, indent: string = '    '): string => {
@@ -131,7 +124,7 @@ export default function YAMLGenerator() {
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let paramsObj: Record<string, any> = {};
+    let paramsObj: Record<string, any>;
     try {
       paramsObj = JSON.parse(fitProfileParams || '{}');
     } catch {

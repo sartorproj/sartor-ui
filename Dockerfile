@@ -11,7 +11,7 @@ RUN bun run build
 
 # Production stage: unprivileged nginx (UID 101), works with readOnlyRootFilesystem
 # as long as /tmp is writable (e.g. an emptyDir).
-FROM ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine@sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd
+FROM ghcr.io/nginx/nginx-unprivileged:1.30.8-alpine@sha256:637c35e46af7bc0dd3d3bcf7162e004e13ab3b370fde7cd416e2ac410b5a985a
 
 # Runtime configuration, read at container start (see README):
 #   SARTOR_API_URL  upstream for /api/ (scheme://fqdn[:port], no path); unset means /api/ returns 502.

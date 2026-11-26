@@ -340,7 +340,7 @@ export default function Analytics() {
                     )}
                   />
                   <Tooltip
-                    formatter={(value: number) => [`${value.toFixed(1)}%`, 'Utilization']}
+                    formatter={(value) => [`${Number(value).toFixed(1)}%`, 'Utilization']}
                     contentStyle={{
                       backgroundColor: 'hsl(var(--card))',
                       border: '1px solid hsl(var(--border))',
@@ -394,7 +394,7 @@ export default function Analytics() {
                       ))}
                     </Pie>
                     <Tooltip
-                      formatter={(value: number) => formatCurrency(value)}
+                      formatter={(value) => formatCurrency(Number(value))}
                       contentStyle={{
                         backgroundColor: 'hsl(var(--card))',
                         border: '1px solid hsl(var(--border))',
@@ -474,7 +474,7 @@ export default function Analytics() {
                         tick={{ fontSize: 11 }}
                       />
                       <Tooltip
-                        formatter={(value: number) => [formatCores(value), 'CPU']}
+                        formatter={(value) => [formatCores(Number(value)), 'CPU']}
                         contentStyle={{
                           backgroundColor: 'hsl(var(--card))',
                           border: '1px solid hsl(var(--border))',
@@ -523,7 +523,7 @@ export default function Analytics() {
                         tick={{ fontSize: 11 }}
                       />
                       <Tooltip
-                        formatter={(value: number) => [`${value.toFixed(1)} MB`, 'Memory']}
+                        formatter={(value) => [`${Number(value).toFixed(1)} MB`, 'Memory']}
                         contentStyle={{
                           backgroundColor: 'hsl(var(--card))',
                           border: '1px solid hsl(var(--border))',
@@ -666,7 +666,7 @@ export default function Analytics() {
                         tick={{ fontSize: 11 }}
                       />
                       <Tooltip
-                        formatter={(value: number) => [formatCurrency(value), 'Hourly Cost']}
+                        formatter={(value) => [formatCurrency(Number(value)), 'Hourly Cost']}
                         contentStyle={{
                           backgroundColor: 'hsl(var(--card))',
                           border: '1px solid hsl(var(--border))',
