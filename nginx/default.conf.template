@@ -1,5 +1,7 @@
 server {
     listen 5173;
+    http2 off;
+    http3 off;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
@@ -13,8 +15,20 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # This proxy adds the API key server-side, so it gives the API to anyone who can
+    # reach the UI. Deploy the UI on a private network or behind an authenticating
+    # proxy. Never expose it publicly.
     location /api/ {
-        proxy_pass ${SARTOR_API_URL};
+        # The upstream is resolved per request, so nginx starts and /api/ returns 502
+        # when it is unset or does not resolve. The resolver skips DNS search domains:
+        # SARTOR_API_URL must use a fully qualified host name.
+        resolver ${SARTOR_RESOLVERS} valid=30s;
+        resolver_timeout 5s;
+        set $sartor_api_upstream "${SARTOR_API_URL}";
+        if ($sartor_api_upstream = "") {
+            return 502;
+        }
+        proxy_pass $sartor_api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

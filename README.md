@@ -61,12 +61,24 @@ Build time (baked into the public JS bundle, so never put secrets here):
 
 - `VITE_API_URL` - Optional absolute URL of the Sartor API server, only if it is served from another origin (default: same origin)
 
-Container runtime (nginx image):
+Container runtime (nginx image), read when the container starts:
 
-- `SARTOR_API_URL` - Upstream for `/api/`, as `scheme://host:port` with no path (default: `http://sartor-server:8080`). nginx exits at startup if the host does not resolve.
-- `SARTOR_API_KEY` - Optional API key that nginx adds as `X-API-Key` on proxied requests; mount it from a Secret. Anyone who can reach the UI can use the API through this proxy, so put the UI behind authentication.
+- `SARTOR_API_URL` - Upstream for `/api/`, as `scheme://host[:port]` with no path, for example `http://sartor-server.sartor-system.svc.cluster.local:8080`. There is no default. If it is unset, invalid, or the host does not resolve, nginx still starts and serves the UI, and `/api/` returns 502.
+  Use a fully qualified host name: nginx resolves it per request through the DNS servers in the container's `/etc/resolv.conf`, and those lookups skip DNS search domains, so a short name such as `sartor-server` only works where the DNS server itself answers it (for example Docker's embedded DNS on a user-defined network).
+- `SARTOR_API_KEY` - Optional API key that nginx adds as `X-API-Key` on proxied requests; mount it from a Secret. Allowed characters: letters, digits and `._~+/=-`. When unset, no key is sent, and a key supplied by the browser is never forwarded.
 
-The image runs as UID 101 (it also works with any non-root UID) and supports `readOnlyRootFilesystem: true` when `/tmp` is writable (for example an `emptyDir`).
+Deploy the UI on a private network or behind an authenticating proxy; the server-side key proxy gives the API to anyone who can reach the UI. Never expose it publicly.
+
+```bash
+docker run --read-only --tmpfs /tmp -p 5173:5173 \
+  -e SARTOR_API_URL=http://sartor-server.example.com:8080 \
+  -e SARTOR_API_KEY=change-me \
+  ghcr.io/sartorproj/sartor-ui:latest
+```
+
+The image runs as UID 101 and supports `readOnlyRootFilesystem: true` when `/tmp` is writable (for example an `emptyDir`). HTTP/2 and HTTP/3 are disabled.
+
+`tests/image-smoke.sh <image>` checks this behaviour against a built image (CI runs it on every pull request).
 
 ## Tech Stack
 

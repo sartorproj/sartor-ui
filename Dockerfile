@@ -11,19 +11,19 @@ RUN bun run build
 
 # Production stage: unprivileged nginx (UID 101), works with readOnlyRootFilesystem
 # as long as /tmp is writable (e.g. an emptyDir).
-FROM ghcr.io/nginx/nginx-unprivileged:1.30.6-alpine@sha256:ea4fd7ab5a8dc6348c18240bd3546f355f8373cd8f112580f7d8bd8ff5a74772
+FROM ghcr.io/nginx/nginx-unprivileged:1.30.7-alpine@sha256:0c53a1f2890c3526bfd201440f0fd3970e5b78f80630f58284aad0d34b5ec7bd
 
-# SARTOR_API_URL: upstream for /api/ (scheme://host:port, no path).
-# SARTOR_API_KEY: optional key sent to the server as X-API-Key; mount it from a Secret.
-# The entrypoint renders /etc/nginx/templates/*.template into /tmp at startup.
-ENV SARTOR_API_URL=http://sartor-server:8080 \
-    SARTOR_API_KEY="" \
-    NGINX_ENVSUBST_OUTPUT_DIR=/tmp \
+# Runtime configuration, read at container start (see README):
+#   SARTOR_API_URL  upstream for /api/ (scheme://fqdn[:port], no path); unset means /api/ returns 502.
+#   SARTOR_API_KEY  optional key sent to the server as X-API-Key; mount it from a Secret.
+# 18-sartor-api.envsh validates them, then the entrypoint renders the template into /tmp.
+ENV NGINX_ENVSUBST_OUTPUT_DIR=/tmp \
     NGINX_ENVSUBST_FILTER=^SARTOR_
 
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --chmod=0755 nginx/18-sartor-api.envsh /docker-entrypoint.d/18-sartor-api.envsh
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 USER 101:101
