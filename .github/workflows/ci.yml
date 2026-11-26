@@ -36,6 +36,28 @@ jobs:
       - name: Run TypeScript check
         run: bun run tsc --noEmit
 
+  image-smoke-test:
+    name: Image Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: sartor-ui:test
+          cache-from: type=gha
+
+      - name: Run image smoke test
+        run: tests/image-smoke.sh sartor-ui:test
+
   docker:
     name: Docker Build & Push
     runs-on: ubuntu-latest
