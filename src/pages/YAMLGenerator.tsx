@@ -51,6 +51,8 @@ export default function YAMLGenerator() {
   const [tailoringFitProfileNamespace, setTailoringFitProfileNamespace] = useState('default');
   const [tailoringRepository, setTailoringRepository] = useState('');
   const [tailoringFilePath, setTailoringFilePath] = useState('');
+  const [tailoringWriteBackType, setTailoringWriteBackType] = useState('raw');
+  const [tailoringHelmValuePath, setTailoringHelmValuePath] = useState('');
   const [tailoringAnalysisWindow, setTailoringAnalysisWindow] = useState('168h');
   const [tailoringPaused, setTailoringPaused] = useState(false);
 
@@ -180,9 +182,13 @@ spec:
     yaml += `\n  writeBack:
     repository: ${tailoringRepository}
     path: ${tailoringFilePath}
-    branch: main
-    format: raw
-  analysisWindow: ${tailoringAnalysisWindow}
+    type: ${tailoringWriteBackType}`;
+
+    if (tailoringWriteBackType === 'helm' && tailoringHelmValuePath) {
+      yaml += `\n    helmValuePath: ${tailoringHelmValuePath}`;
+    }
+
+    yaml += `\n  analysisWindow: ${tailoringAnalysisWindow}
   paused: ${tailoringPaused}
 `;
 
@@ -548,6 +554,36 @@ spec:
                     placeholder="manifests/app.yaml"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="t-writeback-type">Write-back Type *</Label>
+                  <Select
+                    value={tailoringWriteBackType}
+                    onValueChange={setTailoringWriteBackType}
+                  >
+                    <SelectTrigger id="t-writeback-type">
+                      <SelectValue placeholder="Select write-back type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="raw">raw</SelectItem>
+                      <SelectItem value="helm">helm</SelectItem>
+                      <SelectItem value="kustomize">kustomize</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {tailoringWriteBackType === 'helm' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="t-helm-value-path">Helm Value Path</Label>
+                    <Input
+                      id="t-helm-value-path"
+                      value={tailoringHelmValuePath}
+                      onChange={(e) => setTailoringHelmValuePath(e.target.value)}
+                      placeholder="deployment.resources"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="space-y-2">

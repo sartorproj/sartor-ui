@@ -62,7 +62,8 @@ const TIME_RANGES = [
   { value: "6h", label: "6 hours" },
   { value: "12h", label: "12 hours" },
   { value: "24h", label: "24 hours" },
-  { value: "7d", label: "7 days" },
+  // Sent to the server as a Go duration, which has no "d" unit.
+  { value: "168h", label: "7 days" },
 ]
 
 // Color palette for multiple pods
