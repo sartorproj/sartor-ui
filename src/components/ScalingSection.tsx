@@ -271,7 +271,7 @@ function ResourceRow({ container, resource, rs, first }: { container: string; re
       <td className={`${td} font-medium`}>{first ? container || <span className="italic text-muted-foreground">(unnamed)</span> : ''}</td>
       <td className={td}>{resource === 'cpu' ? 'CPU' : 'Memory'}</td>
       <td className={td}>
-        <Badge variant="outline" className={`font-normal ${sizingClass}`}>
+        <Badge variant="outline" className={`font-normal whitespace-nowrap ${sizingClass}`}>
           {sizingLabel(rs.sizing)}
         </Badge>
       </td>

@@ -36,7 +36,7 @@ export function AutoscalerIndicator({ overview, loading, failed }: AutoscalerInd
         ? 'No autoscaler detected'
         : undefined;
   return (
-    <div className="flex flex-wrap items-center gap-1" title={title}>
+    <div className="flex items-center gap-1 whitespace-nowrap" title={title}>
       {kinds.length === 0 && <span className="text-sm text-muted-foreground">{failed ? '?' : '-'}</span>}
       {kinds.map((kind) => (
         <span

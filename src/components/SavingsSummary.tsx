@@ -252,7 +252,7 @@ function ClusterName({ name, label }: { name: string; label: string }) {
 
 function NetCell({ net, netValue, percent, title, showPercent }: { net: string; netValue: number; percent?: number; title: string; showPercent: boolean }) {
   return (
-    <td className={`py-2 px-3 text-right font-mono ${TONE_CLASSES[tone(netValue, 'net')]}`} title={showPercent ? title : undefined}>
+    <td className={`py-2 px-3 text-right font-mono whitespace-nowrap ${TONE_CLASSES[tone(netValue, 'net')]}`} title={showPercent ? title : undefined}>
       {net}
       {showPercent && <div className={`text-xs ${TONE_CLASSES[tone(percent, 'net')]}`}>{formatPercent(percent)}</div>}
     </td>
@@ -260,7 +260,7 @@ function NetCell({ net, netValue, percent, title, showPercent }: { net: string; 
 }
 
 function AmountCells({ group, showCost, showRequested }: { group: SavingsGroup; showCost: boolean; showRequested: boolean }) {
-  const cell = 'py-2 px-3 text-right font-mono';
+  const cell = 'py-2 px-3 text-right font-mono whitespace-nowrap';
   return (
     <>
       <td className={cell}>{group.tailorings}</td>
