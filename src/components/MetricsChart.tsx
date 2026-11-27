@@ -578,7 +578,7 @@ export function MetricsChart({
             />
             
             <ChartTooltip
-              cursor={{ stroke: 'var(--border)', strokeWidth: 1 }}
+              cursor={{ stroke: 'var(--color-border)', strokeWidth: 1 }}
               content={({ active, payload, label }) => {
                 if (!active || !payload?.length) return null
                 

@@ -2,6 +2,15 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../lib/api';
 import type { ResourceAnalytics, CostAnalytics, ClusterResourceSummary } from '../lib/api';
 import {
+  chartAxisStroke,
+  chartAxisTick,
+  chartCursorFill,
+  chartGridStroke,
+  chartMutedFill,
+  chartTooltipContentStyle,
+  chartTooltipLabelStyle,
+} from '../lib/chartTheme';
+import {
   Cpu,
   MemoryStick,
   Server,
@@ -326,7 +335,7 @@ export default function Analytics() {
                   <RadialBar
                     dataKey="value"
                     cornerRadius={10}
-                    background={{ fill: 'hsl(var(--muted))' }}
+                    background={{ fill: chartMutedFill }}
                   />
                   <Legend
                     iconSize={10}
@@ -341,11 +350,9 @@ export default function Analytics() {
                   />
                   <Tooltip
                     formatter={(value) => [`${Number(value).toFixed(1)}%`, 'Utilization']}
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
-                    }}
+                    contentStyle={chartTooltipContentStyle}
+                    labelStyle={chartTooltipLabelStyle}
+                    cursor={{ fill: chartCursorFill }}
                   />
                 </RadialBarChart>
               </ResponsiveContainer>
@@ -395,11 +402,9 @@ export default function Analytics() {
                     </Pie>
                     <Tooltip
                       formatter={(value) => formatCurrency(Number(value))}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipContentStyle}
+                      labelStyle={chartTooltipLabelStyle}
+                      cursor={{ fill: chartCursorFill }}
                     />
                     <Legend />
                   </PieChart>
@@ -460,26 +465,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={cpuByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => `${value.toFixed(2)}`}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [formatCores(Number(value)), 'CPU']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipContentStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={{ fill: chartCursorFill }}
                       />
                       <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                         {cpuByNamespaceData.map((entry, index) => (
@@ -509,26 +513,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={memoryByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => `${value.toFixed(0)} MB`}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [`${Number(value).toFixed(1)} MB`, 'Memory']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipContentStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={{ fill: chartCursorFill }}
                       />
                       <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                         {memoryByNamespaceData.map((entry, index) => (
@@ -652,26 +655,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={costByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => formatCurrency(value)}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [formatCurrency(Number(value)), 'Hourly Cost']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipContentStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={{ fill: chartCursorFill }}
                       />
                       <Bar dataKey="cost" radius={[0, 4, 4, 0]}>
                         {costByNamespaceData.map((entry, index) => (
