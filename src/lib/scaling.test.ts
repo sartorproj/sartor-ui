@@ -214,7 +214,7 @@ describe('autoscalerOverview', () => {
   test('falls back to status.scaling.autoscalers, then to vpaDetected', () => {
     expect(autoscalerOverview({ scaling }).kinds).toEqual(['HPA', 'VPA']);
     expect(autoscalerOverview({ vpaDetected: true }).kinds).toEqual(['VPA']);
-    expect(autoscalerOverview({ scaling: { autoscalers: ['CustomScaler/x', 'HorizontalPodAutoscaler/y'] } }).kinds).toEqual(['HPA', 'CustomScaler']);
+    expect(autoscalerOverview({ scaling: { autoscalers: ['CustomScaler/x', 'HorizontalPodAutoscaler/y'], reason: 'r' } }).kinds).toEqual(['HPA', 'CustomScaler']);
   });
 
   test('is empty without autoscalers or status', () => {

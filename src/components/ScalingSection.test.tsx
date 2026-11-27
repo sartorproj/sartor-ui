@@ -163,7 +163,7 @@ describe('ScalingSection', () => {
   });
 
   test('shows dashes for a partial replica range', () => {
-    const html = render({ lastAnalysis: lastAnalysis(), scaling: { ...scaling, replicas: { typical: 3, source: 'Current' } } });
+    const html = render({ lastAnalysis: lastAnalysis(), scaling: { ...scaling, replicas: { typical: 3, source: 'Current' } as never } });
     expect(html).toContain('— / 3 / —');
     expect(html).toContain('from current replica count');
     expectClean(html);
