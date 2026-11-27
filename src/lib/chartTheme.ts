@@ -22,4 +22,4 @@ export const chartGridStroke = 'var(--color-border)'
 
 export const chartTrackFill = 'var(--color-muted)'
 
-export const chartBarCursor = { fill: 'var(--color-muted)', fillOpacity: 0.6 }
+export const chartBarCursor = { fill: 'var(--color-muted)', fillOpacity: 0.6, stroke: 'none' }
