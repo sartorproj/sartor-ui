@@ -353,6 +353,70 @@ export function prometheusMetricsParams(
   return params;
 }
 
+export const DEFAULT_FORECAST_HORIZON = '24h';
+export const DEFAULT_FORECAST_CONFIDENCE = 0.95;
+
+export interface ForecastOptions {
+  /** Go duration, e.g. "24h". */
+  horizon?: string;
+  /** Interval level in (0, 1), e.g. 0.95. */
+  confidence?: number;
+}
+
+/** Values use the units of the metrics endpoint: cores for CPU, MiB for memory. */
+export interface PrometheusForecast {
+  history: Array<{ timestamp: number; value: number }>;
+  forecast: Array<{ timestamp: number; value: number; lower: number; upper: number }>;
+  level: number;
+  model: string;
+  sampleInterval: number | string;
+  fallbackReason?: string;
+}
+
+/** The server has no forecast endpoint (it predates it). */
+export class ForecastUnavailableError extends Error {
+  constructor(message = 'Forecasting is not available on this server. It needs a newer Sartor server version.') {
+    super(message);
+    this.name = 'ForecastUnavailableError';
+  }
+}
+
+export function forecastParams(
+  namespace: string,
+  podNamePrefix: string,
+  containerName: string,
+  resourceType: 'cpu' | 'memory',
+  window?: string,
+  target?: PrometheusMetricsTarget,
+  options?: ForecastOptions
+): Record<string, string> {
+  return {
+    ...prometheusMetricsParams(namespace, podNamePrefix, containerName, resourceType, window, target),
+    horizon: options?.horizon || DEFAULT_FORECAST_HORIZON,
+    confidence: String(options?.confidence ?? DEFAULT_FORECAST_CONFIDENCE),
+  };
+}
+
+/**
+ * Converts a failed forecast request into an Error carrying the server's
+ * message. A 404 without a JSON error body comes from a server without the
+ * endpoint and becomes a ForecastUnavailableError.
+ */
+export function forecastError(err: unknown): Error {
+  if (axios.isAxiosError(err)) {
+    const body: unknown = err.response?.data;
+    const serverMessage =
+      body && typeof body === 'object' && typeof (body as ApiResponse<unknown>).error === 'string'
+        ? (body as ApiResponse<unknown>).error?.trim()
+        : undefined;
+    if (serverMessage) return new Error(serverMessage);
+    if (err.response?.status === 404) return new ForecastUnavailableError();
+    if (err.response) return new Error(`Forecast request failed with status ${err.response.status}`);
+    return new Error(err.message || 'Forecast request failed');
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
   namespace: string;
   name: string;
@@ -470,6 +534,30 @@ export const apiClient = {
       { params }
     );
     return response.data.data || [];
+  },
+
+  // Unlike the metrics calls, failures are thrown with the server's message
+  // instead of becoming an empty series.
+  getPrometheusForecast: async (
+    namespace: string,
+    podNamePrefix: string,
+    containerName: string,
+    resourceType: 'cpu' | 'memory',
+    window?: string,
+    target?: PrometheusMetricsTarget,
+    options?: ForecastOptions
+  ): Promise<PrometheusForecast> => {
+    const params = forecastParams(namespace, podNamePrefix, containerName, resourceType, window, target, options);
+    let body: ApiResponse<PrometheusForecast>;
+    try {
+      body = (await api.get<ApiResponse<PrometheusForecast>>('/api/v1/prometheus/forecast', { params })).data;
+    } catch (err) {
+      throw forecastError(err);
+    }
+    if (!body || typeof body !== 'object' || body.success === false || !body.data || typeof body.data !== 'object') {
+      throw new Error((typeof body?.error === 'string' && body.error.trim()) || 'The server returned no forecast');
+    }
+    return body.data;
   },
 
   // OpenCost APIs
