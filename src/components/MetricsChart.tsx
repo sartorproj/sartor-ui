@@ -26,6 +26,7 @@ import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Cpu, HardDrive, TrendingUp, TrendingDown, Minus } from "lucide-react"
+import { computeYDomain, placeholderSeries, plottableLines } from "@/lib/metricsChart"
 
 export interface TimeSeriesDataPoint {
   timestamp: number
@@ -82,7 +83,7 @@ export function MetricsChart({
   title,
   description,
   timeSeriesData,
-  resourceLines = [],
+  resourceLines: rawResourceLines,
   resourceType,
   height = 350,
   showTimeRangeSelector = true,
@@ -94,6 +95,7 @@ export function MetricsChart({
   const [timeRange, setTimeRange] = React.useState(defaultTimeRange)
   const [showPerPod, setShowPerPod] = React.useState(false)
   const [hiddenSeries, setHiddenSeries] = React.useState<Set<string>>(new Set())
+  const resourceLines = React.useMemo(() => plottableLines(rawResourceLines ?? []), [rawResourceLines])
 
   // Process data to support per-pod view
   const { chartData, chartConfig, podNames } = React.useMemo(() => {
@@ -227,24 +229,12 @@ export function MetricsChart({
   // Get current timestamp once for placeholder data generation
   const [placeholderTimestamp] = React.useState(() => Math.floor(Date.now() / 1000))
   
-  // Generate placeholder data if we have resource lines but no time series
-  const displayData = React.useMemo(() => {
+  // Generate placeholder data (last hour, 12 points) if we have resource lines but no time series
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const displayData: Record<string, any>[] = React.useMemo(() => {
     if (hasTimeSeriesData) return chartData
     if (!hasResourceLines) return []
-    
-    // Generate placeholder timestamps (last hour with 12 points)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const placeholderData: any[] = []
-    for (let i = 11; i >= 0; i--) {
-      const timestamp = placeholderTimestamp - (i * 5 * 60) // 5 minute intervals
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const point: Record<string, any> = { timestamp }
-      resourceLines.forEach((line) => {
-        point[line.name] = line.value
-      })
-      placeholderData.push(point)
-    }
-    return placeholderData
+    return placeholderSeries(resourceLines, placeholderTimestamp)
   }, [chartData, hasTimeSeriesData, hasResourceLines, resourceLines, placeholderTimestamp])
 
   if (displayData.length === 0 && !hasResourceLines) {
@@ -293,12 +283,9 @@ export function MetricsChart({
       }
     })
     return vals
-  }).filter((v) => v !== undefined && !isNaN(v))
+  })
 
-  const minVal = allValues.length > 0 ? Math.min(...allValues) : 0
-  const maxVal = allValues.length > 0 ? Math.max(...allValues) : 1
-  const padding = (maxVal - minVal) * 0.15 || maxVal * 0.15 || 1
-  const yDomain: [number, number] = [Math.max(0, minVal - padding), maxVal + padding]
+  const yDomain = computeYDomain(allValues)
 
   return (
     <Card className={className}>
@@ -558,6 +545,20 @@ export function MetricsChart({
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4, strokeWidth: 2 }}
+              />
+            )}
+            
+            {/* Without a series recharts lays out no Y axis, so the reference lines below
+                would not be drawn; this invisible series pins the axis to yDomain. */}
+            {!hasTimeSeriesData && (
+              <Area
+                dataKey={() => yDomain[0]}
+                stroke="none"
+                fill="none"
+                dot={false}
+                activeDot={false}
+                legendType="none"
+                isAnimationActive={false}
               />
             )}
             
