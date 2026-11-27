@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable, type TableColumn } from '@/components/DataTable';
+import { formatMemory, parseCPU, parseMemory } from '@/lib/quantity';
 import * as React from 'react';
 
 export default function TailoringDetail() {
@@ -90,22 +91,6 @@ export default function TailoringDetail() {
     enabled: !!tailoring && containerNames.length > 0,
     refetchInterval: 60000,
   });
-
-  // Parse helpers
-  const parseCPU = (value?: string) => {
-    if (!value) return 0;
-    if (value.includes('m')) return parseFloat(value.replace('m', '')) / 1000;
-    if (value.includes('n')) return parseFloat(value.replace('n', '')) / 1000000;
-    return parseFloat(value) || 0;
-  };
-  
-  const parseMemory = (value?: string) => {
-    if (!value) return 0;
-    if (value.includes('Mi')) return parseFloat(value.replace('Mi', ''));
-    if (value.includes('Gi')) return parseFloat(value.replace('Gi', '')) * 1024;
-    if (value.includes('Ki')) return parseFloat(value.replace('Ki', '')) / 1024;
-    return parseFloat(value) || 0;
-  };
 
   // Helper to get resource lines for charts based on container and FitProfile
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -232,8 +217,8 @@ export default function TailoringDetail() {
       rows.push({
         container: container.name,
         resource: 'Memory Request',
-        current: container.current?.requests?.memory || '-',
-        recommended: container.recommended?.requests?.memory || '-',
+        current: formatMemory(container.current?.requests?.memory),
+        recommended: formatMemory(container.recommended?.requests?.memory),
       });
     }
     if (container.current?.limits?.cpu || container.recommended?.limits?.cpu) {
@@ -248,8 +233,8 @@ export default function TailoringDetail() {
       rows.push({
         container: container.name,
         resource: 'Memory Limit',
-        current: container.current?.limits?.memory || '-',
-        recommended: container.recommended?.limits?.memory || '-',
+        current: formatMemory(container.current?.limits?.memory),
+        recommended: formatMemory(container.recommended?.limits?.memory),
       });
     }
     
