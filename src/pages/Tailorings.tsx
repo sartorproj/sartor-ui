@@ -4,6 +4,7 @@ import type { TailoringSummary } from '../lib/api';
 import { Scissors, Pause, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
 import { DataTable, type TableColumn } from '../components/DataTable';
 import { AnalysisCell, AnalysisHealthSummary } from '../components/TailoringAnalysis';
+import { TailoringAutoscalers } from '../components/AutoscalerIndicator';
 import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
@@ -111,6 +112,11 @@ export default function Tailorings() {
               filterable: true,
               getFilterValue: (t) => t.fitProfile || t.intent || '',
               render: (t) => <span className="text-sm">{t.fitProfile || t.intent || '-'}</span>,
+            },
+            {
+              key: 'autoscalers',
+              label: 'Autoscalers',
+              render: (t) => <TailoringAutoscalers summary={t} />,
             },
             {
               key: 'readyCondition',

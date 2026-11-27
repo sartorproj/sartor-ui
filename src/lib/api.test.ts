@@ -7,6 +7,8 @@ let lastPath: string | undefined;
 let forecastResponse: () => Response = () => Response.json({ success: true, data: {} });
 // Response for /api/v1/analytics/*.
 let analyticsResponse: () => Response = () => Response.json({ success: true, data: {} });
+// Response for /api/v1/tailorings/{namespace}/{name}.
+let tailoringResponse: () => Response = () => Response.json({ success: true, data: {} });
 const server = Bun.serve({
   port: 0,
   fetch(req) {
@@ -15,6 +17,7 @@ const server = Bun.serve({
     lastPath = url.pathname;
     if (url.pathname === '/api/v1/prometheus/forecast') return forecastResponse();
     if (url.pathname.startsWith('/api/v1/analytics/')) return analyticsResponse();
+    if (url.pathname.startsWith('/api/v1/tailorings/')) return tailoringResponse();
     return Response.json({ success: true, data: [{ timestamp: 1, value: 2 }] });
   },
 });
@@ -467,6 +470,103 @@ describe('normalizeSavings', () => {
   test('marks byNamespace entries without a namespace with an empty one', () => {
     const report = normalizeSavings({ byNamespace: [{ cluster: 'example-cluster', namespace: '', tailorings: 1 }] });
     expect(report.byNamespace[0].namespace).toBe('');
+  });
+
+  test('keeps requested totals and net percentages, negative ones included', () => {
+    const report = normalizeSavings({
+      totals: {
+        cpu: { reclaimableCores: 12.5, increaseCores: 1.25, netCores: 11.25, totalRequestedCores: 90, netPercent: 12.5 },
+        memory: { reclaimableGiB: 0, increaseGiB: 3, netGiB: -3, totalRequestedGiB: 60, netPercent: -5 },
+      },
+      byNamespace: [
+        { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 1, cpu: { totalRequestedCores: 0, netPercent: null } },
+      ],
+    });
+    expect(report.totals.cpu).toEqual({ reclaimableCores: 12.5, increaseCores: 1.25, netCores: 11.25, totalRequestedCores: 90, netPercent: 12.5 });
+    expect(report.totals.memory.netPercent).toBe(-5);
+    expect(report.byNamespace[0].cpu.totalRequestedCores).toBe(0);
+    expect(report.byNamespace[0].cpu.netPercent).toBeUndefined();
+  });
+
+  test.each([
+    ['missing (older server)', {}],
+    ['null', { totalRequestedCores: null, netPercent: null }],
+    ['garbage', { totalRequestedCores: 'lots', netPercent: { value: 3 } }],
+    ['infinite', { totalRequestedCores: Infinity, netPercent: -Infinity }],
+    ['a negative total', { totalRequestedCores: -4 }],
+  ])('leaves requested totals and percentages unset when %s', (_, cpu) => {
+    const report = normalizeSavings({ totals: { cpu, memory: cpu } });
+    expect(report.totals.cpu.totalRequestedCores).toBeUndefined();
+    expect(report.totals.cpu.netPercent).toBeUndefined();
+    expect(report.totals.memory.totalRequestedGiB).toBeUndefined();
+    expect('totalRequestedCores' in report.totals.cpu).toBe(false);
+  });
+});
+
+describe('apiClient.getTailoring', () => {
+  test('returns the Tailoring with its status passed through', async () => {
+    const scaling = { autoscalers: ['HorizontalPodAutoscaler/example-app'], reason: 'r' };
+    tailoringResponse = () =>
+      Response.json({
+        success: true,
+        data: {
+          metadata: { name: 'example-app', namespace: 'example-namespace' },
+          spec: { target: { kind: 'Deployment', name: 'example-app' }, fitProfileRef: { name: 'balanced' } },
+          status: { scaling, autoscalers: [{ kind: 'HorizontalPodAutoscaler', name: 'example-app', minReplicas: 2 }] },
+        },
+      });
+    const t = await apiClient.getTailoring('example-namespace', 'example-app');
+    expect(lastPath).toBe('/api/v1/tailorings/example-namespace/example-app');
+    expect(t.status.scaling).toEqual(scaling);
+    expect(t.status.autoscalers?.[0].minReplicas).toBe(2);
+    expect(t.spec.target).toEqual({ kind: 'Deployment', name: 'example-app', namespace: undefined, cluster: undefined });
+  });
+
+  test('gives a malformed Tailoring the structure the detail page reads', async () => {
+    tailoringResponse = () =>
+      Response.json({
+        success: true,
+        data: {
+          metadata: { name: ['x'] },
+          spec: { target: 'nope', fitProfileRef: null },
+          status: {
+            conditions: 'x',
+            prState: { open: true },
+            prNumber: 'NaN',
+            lastAnalysis: {
+              containers: [null, 'x', { name: 'app', current: { requests: { cpu: 0.5, memory: { a: 1 } } }, recommended: 'x', p95CPU: [] }],
+            },
+          },
+        },
+      });
+    const t = await apiClient.getTailoring('example-namespace', 'example-app');
+    expect(t.metadata.name).toBe('');
+    expect(t.spec.target.kind).toBe('');
+    expect(t.spec.fitProfileRef.name).toBe('');
+    expect(t.status.conditions).toEqual([]);
+    expect(t.status.prState).toBeUndefined();
+    expect(t.status.prNumber).toBeUndefined();
+    expect(t.status.lastAnalysis?.containers).toHaveLength(1);
+    const c = t.status.lastAnalysis!.containers![0];
+    expect(c.current?.requests).toEqual({ cpu: '0.5', memory: undefined });
+    expect(c.recommended).toEqual({ requests: undefined, limits: undefined });
+    expect(c.p95CPU).toBeUndefined();
+  });
+
+  test('drops a lastAnalysis that is not an object and fills in a missing status', async () => {
+    tailoringResponse = () => Response.json({ success: true, data: { metadata: {}, spec: {}, status: { lastAnalysis: 'yesterday' } } });
+    expect((await apiClient.getTailoring('example-namespace', 'example-app')).status.lastAnalysis).toBeUndefined();
+    tailoringResponse = () => Response.json({ success: true, data: { metadata: {} } });
+    expect((await apiClient.getTailoring('example-namespace', 'example-app')).status.conditions).toEqual([]);
+  });
+
+  test.each([
+    ['no data', { success: true }],
+    ['a list', { success: true, data: [] }],
+    ['a string', { success: true, data: 'x' }],
+  ])('rejects %s', async (_, body) => {
+    tailoringResponse = () => Response.json(body);
+    await expect(apiClient.getTailoring('example-namespace', 'example-app')).rejects.toThrow('Tailoring not found');
   });
 });
 

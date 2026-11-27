@@ -2,6 +2,7 @@ import {
   tailoringAnalysisState,
   type ContainerGain,
   type OpenCostHealthStatus,
+  type SavingsAmounts,
   type SavingsCounts,
   type SavingsGroup,
   type SavingsReport,
@@ -42,6 +43,42 @@ export function formatGiB(value: number): string {
   return `${sign}${numberFormat(abs >= 100 ? 0 : 2).format(abs)} GiB`;
 }
 
+export const NO_PERCENT = '—';
+
+/** Formats a percentage, e.g. "-4.9%", "< 0.1%"; undefined (no total to relate to) becomes a dash. */
+export function formatPercent(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return NO_PERCENT;
+  if (value === 0) return '0%';
+  const abs = Math.abs(value);
+  if (abs < 0.05) return value < 0 ? '> -0.1%' : '< 0.1%';
+  return `${value < 0 ? '-' : ''}${numberFormat(1).format(abs)}%`;
+}
+
+/** part as a percentage of total, undefined when the total is not positive (as the server's netPercent). */
+export function percentOf(part: number, total: number | undefined): number | undefined {
+  if (total === undefined || !(total > 0) || !Number.isFinite(part)) return undefined;
+  return (part / total) * 100;
+}
+
+/** Whether a report carries the requested totals; servers before they were added omit them. */
+export function hasRequestedTotals(report: SavingsReport): boolean {
+  return [report.totals, ...report.byCluster, ...report.byNamespace].some(
+    (g) => g.cpu.totalRequestedCores !== undefined || g.memory.totalRequestedGiB !== undefined,
+  );
+}
+
+/** "412 cores requested, net -20 cores (-4.9%)". */
+export function cpuNetChangeText(cpu: SavingsAmounts['cpu']): string {
+  const total = cpu.totalRequestedCores === undefined ? NO_PERCENT : formatCores(cpu.totalRequestedCores);
+  return `${total} requested, net ${formatCores(cpu.netCores)} (${formatPercent(cpu.netPercent)})`;
+}
+
+/** "1.5 TiB requested, net 300 GiB (19.5%)". */
+export function memoryNetChangeText(memory: SavingsAmounts['memory']): string {
+  const total = memory.totalRequestedGiB === undefined ? NO_PERCENT : formatGiB(memory.totalRequestedGiB);
+  return `${total} requested, net ${formatGiB(memory.netGiB)} (${formatPercent(memory.netPercent)})`;
+}
+
 /** Formats an hourly cost; the unit is whatever the prices were given in. */
 export function formatCostPerHour(amount: number): string {
   return `${numberFormat(2).format(Number.isFinite(amount) ? amount : 0)}/h`;
@@ -59,14 +96,20 @@ export interface ClusterSavings extends SavingsGroup {
   namespaces: SavingsGroup[];
 }
 
+const sumKnown = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? undefined : a + b);
+
 function addAmounts(target: SavingsGroup, group: SavingsGroup) {
   target.tailorings += group.tailorings;
   target.cpu.reclaimableCores += group.cpu.reclaimableCores;
   target.cpu.increaseCores += group.cpu.increaseCores;
   target.cpu.netCores += group.cpu.netCores;
+  target.cpu.totalRequestedCores = sumKnown(target.cpu.totalRequestedCores, group.cpu.totalRequestedCores);
+  target.cpu.netPercent = percentOf(target.cpu.netCores, target.cpu.totalRequestedCores);
   target.memory.reclaimableGiB += group.memory.reclaimableGiB;
   target.memory.increaseGiB += group.memory.increaseGiB;
   target.memory.netGiB += group.memory.netGiB;
+  target.memory.totalRequestedGiB = sumKnown(target.memory.totalRequestedGiB, group.memory.totalRequestedGiB);
+  target.memory.netPercent = percentOf(target.memory.netGiB, target.memory.totalRequestedGiB);
   if (group.cost) {
     target.cost ??= { reclaimablePerHour: 0, increasePerHour: 0, netPerHour: 0 };
     target.cost.reclaimablePerHour += group.cost.reclaimablePerHour;
@@ -91,8 +134,8 @@ export function groupSavingsByCluster(report: SavingsReport): ClusterSavings[] {
       cluster = {
         cluster: ns.cluster,
         tailorings: 0,
-        cpu: { reclaimableCores: 0, increaseCores: 0, netCores: 0 },
-        memory: { reclaimableGiB: 0, increaseGiB: 0, netGiB: 0 },
+        cpu: { reclaimableCores: 0, increaseCores: 0, netCores: 0, totalRequestedCores: 0 },
+        memory: { reclaimableGiB: 0, increaseGiB: 0, netGiB: 0, totalRequestedGiB: 0 },
         namespaces: [],
       };
       clusters.set(ns.cluster, cluster);

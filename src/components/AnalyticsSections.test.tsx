@@ -91,6 +91,76 @@ describe('SavingsSummaryView', () => {
     expect(html).toContain('(no namespace)');
   });
 
+  test('leaves out requested totals and percentages for a server that predates them', () => {
+    const html = renderSavings({ isLoading: false, data: savings }, true);
+    expect(html).not.toContain('Requested CPU');
+    expect(html).not.toContain('requested');
+    expect(html).not.toContain('%');
+    expect(html).not.toContain('—');
+  });
+
+  describe('with requested totals', () => {
+    const withTotals = (cpuTotal: number | null, cpuPercent: number | null, memTotal: number | null, memPercent: number | null) => ({
+      cpu: { totalRequestedCores: cpuTotal, netPercent: cpuPercent },
+      memory: { totalRequestedGiB: memTotal, netPercent: memPercent },
+    });
+    const merge = (a: ReturnType<typeof amounts>, b: ReturnType<typeof withTotals>) => ({
+      cpu: { ...a.cpu, ...b.cpu },
+      memory: { ...a.memory, ...b.memory },
+    });
+    const data = normalizeSavings({
+      totals: merge(amounts(0, 20, 30, 0), withTotals(412, (-20 / 412) * 100, 1536, (30 / 1536) * 100)),
+      byCluster: [
+        { cluster: 'example-cluster', tailorings: 2, ...merge(amounts(0, 20, 30, 0), withTotals(412, (-20 / 412) * 100, 1536, (30 / 1536) * 100)) },
+      ],
+      byNamespace: [
+        { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 1, ...merge(amounts(0, 20, 30, 0), withTotals(400, -5, 1536, 1.953)) },
+        { cluster: 'example-cluster', namespace: 'example-empty', tailorings: 1, ...merge(amounts(0, 0, 0, 0), withTotals(0, null, 0, null)) },
+      ],
+      tailorings: counts(2),
+    });
+
+    test('shows the requested totals and net percentage in the tiles', () => {
+      const html = renderSavings({ isLoading: false, data });
+      expect(html).toContain('Requested CPU');
+      expect(html).toContain('Requested memory');
+      expect(html).toContain('title="412 cores requested, net -20 cores (-4.9%)"');
+      expect(html).toContain('title="1.5 TiB requested, net 30 GiB (2%)"');
+      expect(html).toMatch(/Net -20 cores <span class="text-amber-700[^"]*">\(-4\.9%\)<\/span>/);
+      expect(html).toMatch(/Net 30 GiB <span class="text-emerald-700[^"]*">\(2%\)<\/span>/);
+      expect(html).toContain('a negative one is a net increase');
+    });
+
+    test('shows the totals per cluster and namespace, with a dash for a null percentage', () => {
+      const html = renderSavings({ isLoading: false, data }, true);
+      expect(html).toContain('>Requested CPU</th>');
+      expect(html).toContain('>Requested memory</th>');
+      expect(html).toContain('title="400 cores requested, net -20 cores (-5%)"');
+      expect(html).toContain('title="0 cores requested, net 0 cores (—)"');
+      expect(html).toMatch(/<div class="text-xs text-amber-700[^"]*">-5%<\/div>/);
+      expect(html).toMatch(/<div class="text-xs text-muted-foreground">—<\/div>/);
+      expect(html).not.toContain('NaN');
+      expect(html).not.toContain('undefined');
+      expect(html).not.toContain('[object Object]');
+    });
+
+    test('renders garbage totals as dashes without NaN', () => {
+      const garbage = normalizeSavings({
+        totals: { cpu: { totalRequestedCores: 'x', netPercent: 'y', netCores: 'z' }, memory: { totalRequestedGiB: 3, netPercent: { a: 1 } } },
+        byCluster: [{ cluster: { name: 'x' }, cpu: { totalRequestedCores: -1, netPercent: Infinity } }],
+        byNamespace: [],
+        tailorings: counts(1),
+      });
+      const html = renderSavings({ isLoading: false, data: garbage });
+      expect(html).toContain('Requested memory');
+      expect(html).toContain('title="— requested, net 0 cores (—)"');
+      expect(html).not.toContain('NaN');
+      expect(html).not.toContain('Infinity');
+      expect(html).not.toContain('undefined');
+      expect(html).not.toContain('[object Object]');
+    });
+  });
+
   test('shows hourly cost only when the server priced the request', () => {
     const cost = { reclaimablePerHour: 0.5, increasePerHour: 0.125, netPerHour: 0.375 };
     const data = normalizeSavings({

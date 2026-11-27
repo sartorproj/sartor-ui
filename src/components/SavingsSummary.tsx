@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, TrendingDown } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,10 +7,15 @@ import { apiClient, EndpointUnavailableError, type SavingsGroup, type SavingsRep
 import { ErrorNote, UnavailableNote } from './AnalyticsNotes';
 import {
   clusterLabel,
+  cpuNetChangeText,
   formatCores,
   formatCostPerHour,
   formatGiB,
+  formatPercent,
   groupSavingsByCluster,
+  hasRequestedTotals,
+  memoryNetChangeText,
+  NO_PERCENT,
   skippedBreakdown,
   type QueryView,
 } from '@/lib/analytics';
@@ -47,6 +52,7 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
   }
 
   const showCost = !!data && (!!data.pricing || !!data.totals.cost);
+  const showRequested = !!data && hasRequestedTotals(data);
   const skipped = data ? skippedBreakdown(data.tailorings) : [];
   const toggle = (key: string) =>
     setExpanded((prev) => {
@@ -67,6 +73,7 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
             </CardTitle>
             <CardDescription>
               Requests that recommendations would free up (reclaimable) or add (increase), multiplied by replicas
+              {showRequested && '. Net percentages are of the current requests; a negative one is a net increase'}
             </CardDescription>
           </div>
           {data && (
@@ -94,22 +101,45 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
           </p>
         ) : (
           <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              <Stat
-                label="Reclaimable CPU"
-                value={formatCores(data.totals.cpu.reclaimableCores)}
-                tone={tone(data.totals.cpu.reclaimableCores, 'reclaimable')}
-                detail={`Net ${formatCores(data.totals.cpu.netCores)}`}
-              />
-              <Stat
-                label="Reclaimable memory"
-                value={formatGiB(data.totals.memory.reclaimableGiB)}
-                tone={tone(data.totals.memory.reclaimableGiB, 'reclaimable')}
-                detail={`Net ${formatGiB(data.totals.memory.netGiB)}`}
-              />
-              <Stat label="CPU increase" value={formatCores(data.totals.cpu.increaseCores)} tone={tone(data.totals.cpu.increaseCores, 'increase')} />
-              <Stat label="Memory increase" value={formatGiB(data.totals.memory.increaseGiB)} tone={tone(data.totals.memory.increaseGiB, 'increase')} />
-            </div>
+            {showRequested ? (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+                <Stat
+                  label="Requested CPU"
+                  value={formatOptional(data.totals.cpu.totalRequestedCores, formatCores)}
+                  tone="plain"
+                  title={cpuNetChangeText(data.totals.cpu)}
+                  detail={<NetChange net={formatCores(data.totals.cpu.netCores)} percent={data.totals.cpu.netPercent} />}
+                />
+                <Stat label="Reclaimable CPU" value={formatCores(data.totals.cpu.reclaimableCores)} tone={tone(data.totals.cpu.reclaimableCores, 'reclaimable')} />
+                <Stat label="CPU increase" value={formatCores(data.totals.cpu.increaseCores)} tone={tone(data.totals.cpu.increaseCores, 'increase')} />
+                <Stat
+                  label="Requested memory"
+                  value={formatOptional(data.totals.memory.totalRequestedGiB, formatGiB)}
+                  tone="plain"
+                  title={memoryNetChangeText(data.totals.memory)}
+                  detail={<NetChange net={formatGiB(data.totals.memory.netGiB)} percent={data.totals.memory.netPercent} />}
+                />
+                <Stat label="Reclaimable memory" value={formatGiB(data.totals.memory.reclaimableGiB)} tone={tone(data.totals.memory.reclaimableGiB, 'reclaimable')} />
+                <Stat label="Memory increase" value={formatGiB(data.totals.memory.increaseGiB)} tone={tone(data.totals.memory.increaseGiB, 'increase')} />
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <Stat
+                  label="Reclaimable CPU"
+                  value={formatCores(data.totals.cpu.reclaimableCores)}
+                  tone={tone(data.totals.cpu.reclaimableCores, 'reclaimable')}
+                  detail={`Net ${formatCores(data.totals.cpu.netCores)}`}
+                />
+                <Stat
+                  label="Reclaimable memory"
+                  value={formatGiB(data.totals.memory.reclaimableGiB)}
+                  tone={tone(data.totals.memory.reclaimableGiB, 'reclaimable')}
+                  detail={`Net ${formatGiB(data.totals.memory.netGiB)}`}
+                />
+                <Stat label="CPU increase" value={formatCores(data.totals.cpu.increaseCores)} tone={tone(data.totals.cpu.increaseCores, 'increase')} />
+                <Stat label="Memory increase" value={formatGiB(data.totals.memory.increaseGiB)} tone={tone(data.totals.memory.increaseGiB, 'increase')} />
+              </div>
+            )}
             {data.totals.cost && (
               <p className="text-sm text-muted-foreground">
                 Estimated cost at the given prices: {formatCostPerHour(data.totals.cost.reclaimablePerHour)} reclaimable,{' '}
@@ -122,9 +152,11 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
                   <tr className="border-b border-border text-muted-foreground">
                     <th className="py-2 px-3 text-left font-medium">Cluster / namespace</th>
                     <th className="py-2 px-3 text-right font-medium">Tailorings</th>
+                    {showRequested && <th className="py-2 px-3 text-right font-medium">Requested CPU</th>}
                     <th className="py-2 px-3 text-right font-medium">Reclaimable CPU</th>
                     <th className="py-2 px-3 text-right font-medium">CPU increase</th>
                     <th className="py-2 px-3 text-right font-medium">Net CPU</th>
+                    {showRequested && <th className="py-2 px-3 text-right font-medium">Requested memory</th>}
                     <th className="py-2 px-3 text-right font-medium">Reclaimable memory</th>
                     <th className="py-2 px-3 text-right font-medium">Memory increase</th>
                     <th className="py-2 px-3 text-right font-medium">Net memory</th>
@@ -155,13 +187,13 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
                             </span>
                           )}
                         </td>
-                        <AmountCells group={cluster} showCost={showCost} />
+                        <AmountCells group={cluster} showCost={showCost} showRequested={showRequested} />
                       </tr>,
                       ...(isOpen
                         ? cluster.namespaces.map((ns, nsIndex) => (
                             <tr key={`${key}/${ns.namespace || nsIndex}`} className="border-b border-border/30 text-muted-foreground">
                               <td className="py-1.5 px-3 pl-10">{ns.namespace || <span className="italic">(no namespace)</span>}</td>
-                              <AmountCells group={ns} showCost={showCost} />
+                              <AmountCells group={ns} showCost={showCost} showRequested={showRequested} />
                             </tr>
                           ))
                         : []),
@@ -177,10 +209,10 @@ export function SavingsSummaryView({ query, defaultExpanded = false }: SavingsSu
   );
 }
 
-type Tone = 'good' | 'warn' | 'neutral';
+type Tone = 'good' | 'warn' | 'neutral' | 'plain';
 
-function tone(value: number, kind: 'reclaimable' | 'increase' | 'net'): Tone {
-  if (value === 0 || (kind !== 'net' && value < 0)) return 'neutral';
+function tone(value: number | undefined, kind: 'reclaimable' | 'increase' | 'net'): Tone {
+  if (value === undefined || !Number.isFinite(value) || value === 0 || (kind !== 'net' && value < 0)) return 'neutral';
   if (kind === 'increase') return 'warn';
   return value > 0 ? 'good' : 'warn';
 }
@@ -189,11 +221,15 @@ const TONE_CLASSES: Record<Tone, string> = {
   good: 'text-emerald-700 dark:text-emerald-400',
   warn: 'text-amber-700 dark:text-amber-400',
   neutral: 'text-muted-foreground',
+  plain: '',
 };
 
-function Stat({ label, value, tone, detail }: { label: string; value: string; tone: Tone; detail?: string }) {
+const formatOptional = (value: number | undefined, format: (v: number) => string) =>
+  value === undefined ? NO_PERCENT : format(value);
+
+function Stat({ label, value, tone, detail, title }: { label: string; value: string; tone: Tone; detail?: ReactNode; title?: string }) {
   return (
-    <div className="rounded-lg bg-muted/50 p-3">
+    <div className="rounded-lg bg-muted/50 p-3" title={title}>
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className={`mt-1 text-xl font-bold font-mono ${TONE_CLASSES[tone]}`}>{value}</p>
       {detail && <p className="mt-0.5 text-xs text-muted-foreground font-mono">{detail}</p>}
@@ -201,21 +237,53 @@ function Stat({ label, value, tone, detail }: { label: string; value: string; to
   );
 }
 
+/** "Net -20 cores (-4.9%)", the percentage green for a net reduction and amber for a net increase. */
+function NetChange({ net, percent }: { net: string; percent: number | undefined }) {
+  return (
+    <>
+      Net {net} <span className={TONE_CLASSES[tone(percent, 'net')]}>({formatPercent(percent)})</span>
+    </>
+  );
+}
+
 function ClusterName({ name, label }: { name: string; label: string }) {
   return name ? <span>{label}</span> : <span className="italic" title="The Tailorings set no target cluster">{label}</span>;
 }
 
-function AmountCells({ group, showCost }: { group: SavingsGroup; showCost: boolean }) {
-  const cell = 'py-2 px-3 text-right font-mono';
+function NetCell({ net, netValue, percent, title, showPercent }: { net: string; netValue: number; percent?: number; title: string; showPercent: boolean }) {
+  return (
+    <td className={`py-2 px-3 text-right font-mono whitespace-nowrap ${TONE_CLASSES[tone(netValue, 'net')]}`} title={showPercent ? title : undefined}>
+      {net}
+      {showPercent && <div className={`text-xs ${TONE_CLASSES[tone(percent, 'net')]}`}>{formatPercent(percent)}</div>}
+    </td>
+  );
+}
+
+function AmountCells({ group, showCost, showRequested }: { group: SavingsGroup; showCost: boolean; showRequested: boolean }) {
+  const cell = 'py-2 px-3 text-right font-mono whitespace-nowrap';
   return (
     <>
       <td className={cell}>{group.tailorings}</td>
+      {showRequested && <td className={cell}>{formatOptional(group.cpu.totalRequestedCores, formatCores)}</td>}
       <td className={`${cell} ${TONE_CLASSES[tone(group.cpu.reclaimableCores, 'reclaimable')]}`}>{formatCores(group.cpu.reclaimableCores)}</td>
       <td className={`${cell} ${TONE_CLASSES[tone(group.cpu.increaseCores, 'increase')]}`}>{formatCores(group.cpu.increaseCores)}</td>
-      <td className={`${cell} ${TONE_CLASSES[tone(group.cpu.netCores, 'net')]}`}>{formatCores(group.cpu.netCores)}</td>
+      <NetCell
+        net={formatCores(group.cpu.netCores)}
+        netValue={group.cpu.netCores}
+        percent={group.cpu.netPercent}
+        title={cpuNetChangeText(group.cpu)}
+        showPercent={showRequested}
+      />
+      {showRequested && <td className={cell}>{formatOptional(group.memory.totalRequestedGiB, formatGiB)}</td>}
       <td className={`${cell} ${TONE_CLASSES[tone(group.memory.reclaimableGiB, 'reclaimable')]}`}>{formatGiB(group.memory.reclaimableGiB)}</td>
       <td className={`${cell} ${TONE_CLASSES[tone(group.memory.increaseGiB, 'increase')]}`}>{formatGiB(group.memory.increaseGiB)}</td>
-      <td className={`${cell} ${TONE_CLASSES[tone(group.memory.netGiB, 'net')]}`}>{formatGiB(group.memory.netGiB)}</td>
+      <NetCell
+        net={formatGiB(group.memory.netGiB)}
+        netValue={group.memory.netGiB}
+        percent={group.memory.netPercent}
+        title={memoryNetChangeText(group.memory)}
+        showPercent={showRequested}
+      />
       {showCost && <td className={cell}>{group.cost ? formatCostPerHour(group.cost.netPerHour) : '-'}</td>}
     </>
   );

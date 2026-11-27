@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable, type TableColumn } from '@/components/DataTable';
+import { ScalingSection } from '@/components/ScalingSection';
 import { formatMemory, parseCPU, parseMemory } from '@/lib/quantity';
 import * as React from 'react';
 
@@ -400,6 +401,8 @@ export default function TailoringDetail() {
           </CardContent>
         </Card>
       )}
+
+      <ScalingSection status={tailoring.status} />
 
       {!tailoring.status.lastAnalysis && (
         <Card className="text-center py-12">
