@@ -103,6 +103,42 @@ export function hasPercentileBounds(bounds: PercentileBounds | undefined): boole
   return bounds?.p95 !== undefined || bounds?.p99 !== undefined
 }
 
+const MEMORY_UNITS = [
+  { tooltip: 'Gi', axis: 'G' },
+  { tooltip: 'Ti', axis: 'T' },
+  { tooltip: 'Pi', axis: 'P' },
+  { tooltip: 'Ei', axis: 'E' },
+]
+const compactNumber = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
+
+/**
+ * Formats a chart value (cores for CPU, MiB for memory) for the tooltip or the
+ * Y axis. Huge values move to larger units so axis labels stay short.
+ */
+export function formatChartValue(
+  value: number | null | undefined,
+  resourceType: 'cpu' | 'memory',
+  style: 'tooltip' | 'axis',
+): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  if (resourceType === 'cpu') {
+    if (value < 1) return `${(value * 1000).toFixed(0)}m`
+    if (value >= 1e15) return value.toExponential(1)
+    if (value >= 1000) return compactNumber.format(value)
+    return value.toFixed(style === 'tooltip' ? 2 : 1)
+  }
+  if (value < 1024) return style === 'tooltip' ? `${value.toFixed(0)} Mi` : `${value.toFixed(0)}M`
+  let scaled = value / 1024
+  let unit = 0
+  while (scaled >= 1024 && unit < MEMORY_UNITS.length - 1) {
+    scaled /= 1024
+    unit++
+  }
+  return style === 'tooltip'
+    ? `${scaled.toFixed(2)} ${MEMORY_UNITS[unit].tooltip}`
+    : `${scaled.toFixed(1)}${MEMORY_UNITS[unit].axis}`
+}
+
 export const FORECAST_KEY = 'forecast'
 export const FORECAST_RANGE_KEY = 'forecastRange'
 

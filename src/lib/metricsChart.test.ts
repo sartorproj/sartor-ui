@@ -4,6 +4,7 @@ import {
   computeYDomain,
   describeForecast,
   forecastSeries,
+  formatChartValue,
   hasPercentileBounds,
   observedUsage,
   percentileBounds,
@@ -390,5 +391,31 @@ describe('describeForecast', () => {
     [undefined, { model: undefined, interval: undefined }],
   ])('describes case %#', (input, expected) => {
     expect(describeForecast(input as never)).toEqual(expected);
+  });
+});
+
+describe('formatChartValue', () => {
+  test.each([
+    [0, 'cpu', '0m', '0m'],
+    [0.492, 'cpu', '492m', '492m'],
+    [1.5, 'cpu', '1.50', '1.5'],
+    [999, 'cpu', '999.00', '999.0'],
+    [1500, 'cpu', '1.5K', '1.5K'],
+    [2e6, 'cpu', '2M', '2M'],
+    [1e18, 'cpu', '1.0e+18', '1.0e+18'],
+    [0, 'memory', '0 Mi', '0M'],
+    [358.4, 'memory', '358 Mi', '358M'],
+    [1024, 'memory', '1.00 Gi', '1.0G'],
+    [1536, 'memory', '1.50 Gi', '1.5G'],
+    [2 * 1024 ** 2, 'memory', '2.00 Ti', '2.0T'],
+    [8 * 2 ** 40, 'memory', '8.00 Ei', '8.0E'],
+  ] as const)('formats %p %s', (value, resourceType, tooltip, axis) => {
+    expect(formatChartValue(value, resourceType, 'tooltip')).toBe(tooltip);
+    expect(formatChartValue(value, resourceType, 'axis')).toBe(axis);
+  });
+
+  test.each([undefined, null, NaN, Infinity, -Infinity])('returns "-" for %p', (value) => {
+    expect(formatChartValue(value, 'cpu', 'tooltip')).toBe('-');
+    expect(formatChartValue(value, 'memory', 'axis')).toBe('-');
   });
 });

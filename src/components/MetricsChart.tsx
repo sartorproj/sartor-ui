@@ -33,6 +33,7 @@ import {
   computeYDomain,
   describeForecast,
   forecastSeries,
+  formatChartValue,
   placeholderSeries,
   plottableLines,
   withForecast,
@@ -265,20 +266,9 @@ export function MetricsChart({
     })
   }
 
-  const formatValue = (value: number | undefined) => {
-    if (value === undefined || isNaN(value)) return '-'
-    if (resourceType === 'cpu') {
-      return value < 1 ? `${(value * 1000).toFixed(0)}m` : `${value.toFixed(2)}`
-    }
-    return value >= 1024 ? `${(value / 1024).toFixed(2)} Gi` : `${value.toFixed(0)} Mi`
-  }
+  const formatValue = (value: number | undefined) => formatChartValue(value, resourceType, 'tooltip')
 
-  const formatYAxis = (value: number) => {
-    if (resourceType === 'cpu') {
-      return value < 1 ? `${(value * 1000).toFixed(0)}m` : `${value.toFixed(1)}`
-    }
-    return value >= 1024 ? `${(value / 1024).toFixed(1)}G` : `${value.toFixed(0)}M`
-  }
+  const formatYAxis = (value: number) => formatChartValue(value, resourceType, 'axis')
 
   // If no time series data but we have resource lines, generate placeholder chart data
   const hasResourceLines = resourceLines.length > 0
