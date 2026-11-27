@@ -36,6 +36,9 @@ jobs:
       - name: Run TypeScript check
         run: bun run tsc -b
 
+      - name: Run unit tests
+        run: bun run test
+
   image-smoke-test:
     name: Image Smoke Test
     runs-on: ubuntu-latest
