@@ -27,6 +27,63 @@ export interface TailoringSummary {
   prState?: string;
   prNumber?: number;
   prUrl?: string;
+  // The fields below are absent on servers that predate them.
+  /** Status of the Analyzed condition: "True", "False" or "Unknown". */
+  analyzedCondition?: string;
+  analyzedReason?: string;
+  analyzedMessage?: string;
+  nextAnalysisTime?: string;
+  consecutiveFailures?: number;
+}
+
+export type AnalysisState = 'analyzed' | 'failing' | 'pending';
+
+export interface AnalysisStatus {
+  state: AnalysisState;
+  reason?: string;
+  message?: string;
+  lastAnalysis?: Date;
+  nextAnalysis?: Date;
+  consecutiveFailures: number;
+}
+
+function parseTime(value: unknown): Date | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function trimmed(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+/**
+ * Derives the analysis state of a Tailoring from its summary. A Tailoring is
+ * failing when its Analyzed condition is False, or, without a condition, when
+ * failures are counted; analyzed when the condition is True or it has a last
+ * analysis; otherwise it is still pending its first analysis.
+ */
+export function tailoringAnalysisStatus(summary: TailoringSummary): AnalysisStatus {
+  const condition = trimmed(summary.analyzedCondition);
+  const failures = Number(summary.consecutiveFailures);
+  const consecutiveFailures = Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0;
+  const lastAnalysis = parseTime(summary.lastAnalysis);
+  let state: AnalysisState;
+  if (condition === 'False' || (!condition && consecutiveFailures > 0)) {
+    state = 'failing';
+  } else if (condition === 'True' || lastAnalysis) {
+    state = 'analyzed';
+  } else {
+    state = 'pending';
+  }
+  return {
+    state,
+    reason: trimmed(summary.analyzedReason),
+    message: trimmed(summary.analyzedMessage),
+    lastAnalysis,
+    nextAnalysis: parseTime(summary.nextAnalysisTime),
+    consecutiveFailures,
+  };
 }
 
 export interface Tailoring {
@@ -403,6 +460,10 @@ export function forecastParams(
  * endpoint and becomes a ForecastUnavailableError.
  */
 export function forecastError(err: unknown): Error {
+  return requestError(err, 'Forecast', () => new ForecastUnavailableError());
+}
+
+function requestError(err: unknown, label: string, unavailable: () => Error): Error {
   if (axios.isAxiosError(err)) {
     const body: unknown = err.response?.data;
     const serverMessage =
@@ -410,11 +471,274 @@ export function forecastError(err: unknown): Error {
         ? (body as ApiResponse<unknown>).error?.trim()
         : undefined;
     if (serverMessage) return new Error(serverMessage);
-    if (err.response?.status === 404) return new ForecastUnavailableError();
-    if (err.response) return new Error(`Forecast request failed with status ${err.response.status}`);
-    return new Error(err.message || 'Forecast request failed');
+    if (err.response?.status === 404) return unavailable();
+    if (err.response) return new Error(`${label} request failed with status ${err.response.status}`);
+    return new Error(err.message || `${label} request failed`);
   }
   return err instanceof Error ? err : new Error(String(err));
+}
+
+/** The server predates an endpoint the UI calls. */
+export class EndpointUnavailableError extends Error {
+  constructor(message = 'This requires a newer Sartor server version.') {
+    super(message);
+    this.name = 'EndpointUnavailableError';
+  }
+}
+
+export const ANALYTICS_ENDPOINTS = {
+  savings: '/api/v1/analytics/savings',
+  topGains: '/api/v1/analytics/top-gains',
+} as const;
+
+export const DEFAULT_TOP_GAINS_LIMIT = 10;
+
+/**
+ * Request changes the latest recommendations would make, as
+ * (current - recommended request) x replicas: reclaimable sums the decreases,
+ * needed the increases.
+ */
+export interface ResourceSavings {
+  reclaimableCpuCores: number;
+  neededCpuCores: number;
+  reclaimableMemoryGiB: number;
+  neededMemoryGiB: number;
+  /** Set only when the server was given prices. */
+  reclaimableCost?: number;
+  neededCost?: number;
+}
+
+export interface SavingsCounts {
+  /** Containers counted in the totals. */
+  included: number;
+  /** Containers left out, for example because they have no recommendation yet. */
+  skipped: number;
+}
+
+export interface NamespaceSavings extends ResourceSavings, SavingsCounts {
+  namespace: string;
+}
+
+export interface ClusterSavings extends ResourceSavings, SavingsCounts {
+  /** Empty when the server does not tell clusters apart. */
+  cluster: string;
+  namespaces: NamespaceSavings[];
+}
+
+export interface SavingsReport {
+  clusters: ClusterSavings[];
+  total: ResourceSavings & SavingsCounts;
+  currency?: string;
+}
+
+export interface TopGain {
+  cluster: string;
+  namespace: string;
+  /** Name of the Tailoring; empty when the server did not send one. */
+  tailoring: string;
+  container: string;
+  targetKind?: string;
+  targetName?: string;
+  replicas?: number;
+  reclaimableCpuCores: number;
+  reclaimableMemoryGiB: number;
+  /** Per-replica requests. */
+  currentCpuCores?: number;
+  recommendedCpuCores?: number;
+  currentMemoryGiB?: number;
+  recommendedMemoryGiB?: number;
+}
+
+/** Containers with a positive reclaimable amount, largest first. */
+export interface TopGains {
+  cpu: TopGain[];
+  memory: TopGain[];
+}
+
+type RawObject = Record<string, unknown>;
+
+function isObject(value: unknown): value is RawObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Field names are matched case-insensitively so that, e.g., reclaimableCpuCores
+// and reclaimableCPUCores are both understood.
+function rawField(raw: RawObject, names: string[]): unknown {
+  for (const name of names) {
+    if (name in raw) return raw[name];
+  }
+  const lower = names.map((name) => name.toLowerCase());
+  const key = Object.keys(raw).find((k) => lower.includes(k.toLowerCase()));
+  return key === undefined ? undefined : raw[key];
+}
+
+function optionalNumber(raw: RawObject, ...names: string[]): number | undefined {
+  const value = rawField(raw, names);
+  if (value === null || value === undefined || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function rawString(raw: RawObject, ...names: string[]): string {
+  const value = rawField(raw, names);
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function rawArray(raw: RawObject, ...names: string[]): unknown[] {
+  const value = rawField(raw, names);
+  return Array.isArray(value) ? value : [];
+}
+
+const SAVINGS_FIELDS = {
+  reclaimableCpuCores: ['reclaimableCpuCores', 'reclaimableCpu'],
+  neededCpuCores: ['neededCpuCores', 'neededCpu'],
+  reclaimableMemoryGiB: ['reclaimableMemoryGiB', 'reclaimableMemory'],
+  neededMemoryGiB: ['neededMemoryGiB', 'neededMemory'],
+} as const;
+
+const COUNT_FIELDS = {
+  included: ['included', 'includedCount'],
+  skipped: ['skipped', 'skippedCount'],
+} as const;
+
+type SavingsTotals = ResourceSavings & SavingsCounts;
+
+function sumSavings(items: SavingsTotals[]): SavingsTotals {
+  const total: SavingsTotals = {
+    reclaimableCpuCores: 0,
+    neededCpuCores: 0,
+    reclaimableMemoryGiB: 0,
+    neededMemoryGiB: 0,
+    included: 0,
+    skipped: 0,
+  };
+  for (const item of items) {
+    for (const key of [...Object.keys(SAVINGS_FIELDS), ...Object.keys(COUNT_FIELDS)] as Array<keyof SavingsTotals>) {
+      total[key] = (total[key] ?? 0) + (item[key] ?? 0);
+    }
+    for (const key of ['reclaimableCost', 'neededCost'] as const) {
+      if (item[key] !== undefined) total[key] = (total[key] ?? 0) + item[key];
+    }
+  }
+  return total;
+}
+
+/** Reads totals from raw, using fallback for the fields it lacks. */
+function savingsTotals(raw: RawObject, fallback: SavingsTotals): SavingsTotals {
+  const totals = { ...fallback };
+  for (const [key, names] of Object.entries({ ...SAVINGS_FIELDS, ...COUNT_FIELDS })) {
+    const value = optionalNumber(raw, ...names);
+    if (value !== undefined) totals[key as keyof typeof SAVINGS_FIELDS | keyof typeof COUNT_FIELDS] = value;
+  }
+  const reclaimableCost = optionalNumber(raw, 'reclaimableCost');
+  const neededCost = optionalNumber(raw, 'neededCost');
+  if (reclaimableCost !== undefined) totals.reclaimableCost = reclaimableCost;
+  if (neededCost !== undefined) totals.neededCost = neededCost;
+  return totals;
+}
+
+const ZERO_TOTALS = sumSavings([]);
+
+/** Converts the savings endpoint's data into a SavingsReport; anything unusable becomes empty. */
+export function normalizeSavingsReport(data: unknown): SavingsReport {
+  const raw: RawObject = Array.isArray(data) ? { clusters: data } : isObject(data) ? data : {};
+  const clusters: ClusterSavings[] = rawArray(raw, 'clusters')
+    .filter(isObject)
+    .map((rawCluster) => {
+      const namespaces: NamespaceSavings[] = rawArray(rawCluster, 'namespaces')
+        .filter(isObject)
+        .map((rawNamespace) => ({
+          namespace: rawString(rawNamespace, 'namespace', 'name'),
+          ...savingsTotals(rawNamespace, ZERO_TOTALS),
+        }));
+      return {
+        cluster: rawString(rawCluster, 'cluster', 'name'),
+        ...savingsTotals(rawCluster, sumSavings(namespaces)),
+        namespaces,
+      };
+    });
+  const rawTotal = rawField(raw, ['total', 'totals']);
+  const total = savingsTotals(raw, savingsTotals(isObject(rawTotal) ? rawTotal : {}, sumSavings(clusters)));
+  const currency = rawString(raw, 'currency');
+  return { clusters, total, ...(currency ? { currency } : {}) };
+}
+
+function normalizeTopGain(raw: RawObject): TopGain {
+  const gain: TopGain = {
+    cluster: rawString(raw, 'cluster'),
+    namespace: rawString(raw, 'namespace'),
+    tailoring: rawString(raw, 'tailoring', 'tailoringName', 'name'),
+    container: rawString(raw, 'container', 'containerName'),
+    reclaimableCpuCores: optionalNumber(raw, ...SAVINGS_FIELDS.reclaimableCpuCores) ?? 0,
+    reclaimableMemoryGiB: optionalNumber(raw, ...SAVINGS_FIELDS.reclaimableMemoryGiB) ?? 0,
+  };
+  const targetKind = rawString(raw, 'targetKind');
+  const targetName = rawString(raw, 'targetName');
+  if (targetKind) gain.targetKind = targetKind;
+  if (targetName) gain.targetName = targetName;
+  const optional = {
+    replicas: optionalNumber(raw, 'replicas'),
+    currentCpuCores: optionalNumber(raw, 'currentCpuCores', 'currentCpu'),
+    recommendedCpuCores: optionalNumber(raw, 'recommendedCpuCores', 'recommendedCpu'),
+    currentMemoryGiB: optionalNumber(raw, 'currentMemoryGiB', 'currentMemory'),
+    recommendedMemoryGiB: optionalNumber(raw, 'recommendedMemoryGiB', 'recommendedMemory'),
+  };
+  for (const [key, value] of Object.entries(optional)) {
+    if (value !== undefined) gain[key as keyof typeof optional] = value;
+  }
+  return gain;
+}
+
+function rankGains(items: unknown[], key: 'reclaimableCpuCores' | 'reclaimableMemoryGiB', limit: number): TopGain[] {
+  return items
+    .filter(isObject)
+    .map(normalizeTopGain)
+    .filter((gain) => gain[key] > 0)
+    .sort((a, b) => b[key] - a[key])
+    .slice(0, Math.max(0, limit));
+}
+
+/**
+ * Converts the top-gains endpoint's data into separate CPU and memory
+ * rankings. The data may be one list of containers, or an object with a list
+ * per resource.
+ */
+export function normalizeTopGains(data: unknown, limit = DEFAULT_TOP_GAINS_LIMIT): TopGains {
+  if (Array.isArray(data)) {
+    return { cpu: rankGains(data, 'reclaimableCpuCores', limit), memory: rankGains(data, 'reclaimableMemoryGiB', limit) };
+  }
+  if (!isObject(data)) return { cpu: [], memory: [] };
+  const shared = rawArray(data, 'items', 'containers', 'gains');
+  const cpu = rawArray(data, 'cpu', 'byCpu');
+  const memory = rawArray(data, 'memory', 'byMemory');
+  return {
+    cpu: rankGains(cpu.length > 0 ? cpu : shared, 'reclaimableCpuCores', limit),
+    memory: rankGains(memory.length > 0 ? memory : shared, 'reclaimableMemoryGiB', limit),
+  };
+}
+
+/**
+ * GETs an endpoint that answers with an ApiResponse and returns its data.
+ * Errors carry the server's message; a 404 without one means the server
+ * predates the endpoint and becomes an EndpointUnavailableError.
+ */
+async function getOptionalEndpoint(
+  path: string,
+  params: Record<string, string>,
+  label: string,
+  unavailableMessage: string,
+): Promise<unknown> {
+  let body: unknown;
+  try {
+    body = (await api.get<unknown>(path, { params })).data;
+  } catch (err) {
+    throw requestError(err, label, () => new EndpointUnavailableError(unavailableMessage));
+  }
+  if (!isObject(body)) throw new Error(`${label}: the server returned an unexpected response`);
+  if (body.success === false) {
+    throw new Error((typeof body.error === 'string' && body.error.trim()) || `${label} request failed`);
+  }
+  return body.data;
 }
 
 export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
@@ -558,6 +882,27 @@ export const apiClient = {
       throw new Error((typeof body?.error === 'string' && body.error.trim()) || 'The server returned no forecast');
     }
     return body.data;
+  },
+
+  // Analytics computed by Sartor from its recommendations; they do not need OpenCost.
+  getSavingsReport: async (): Promise<SavingsReport> => {
+    const data = await getOptionalEndpoint(
+      ANALYTICS_ENDPOINTS.savings,
+      {},
+      'Savings',
+      'The savings summary requires a newer Sartor server version.',
+    );
+    return normalizeSavingsReport(data);
+  },
+
+  getTopGains: async (limit: number = DEFAULT_TOP_GAINS_LIMIT): Promise<TopGains> => {
+    const data = await getOptionalEndpoint(
+      ANALYTICS_ENDPOINTS.topGains,
+      { limit: String(limit) },
+      'Top gains',
+      'Biggest gains requires a newer Sartor server version.',
+    );
+    return normalizeTopGains(data, limit);
   },
 
   // OpenCost APIs
