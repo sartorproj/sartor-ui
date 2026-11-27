@@ -1,9 +1,11 @@
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiClient } from '../lib/api';
+import { apiClient, tailoringAnalysisStatus } from '../lib/api';
 import type { TailoringSummary } from '../lib/api';
+import { analysisHealth } from '../lib/analytics';
 import { Scissors, Pause, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
 import { DataTable, type TableColumn } from '../components/DataTable';
+import { AnalysisHealthSummary, LastAnalysisCell } from '../components/AnalysisStatus';
 import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
@@ -13,6 +15,7 @@ export default function Tailorings() {
     queryFn: () => apiClient.listTailorings(),
     refetchInterval: 30000,
   });
+  const health = useMemo(() => analysisHealth((tailorings ?? []).map(tailoringAnalysisStatus)), [tailorings]);
 
   if (isLoading) {
     return (
@@ -47,6 +50,8 @@ export default function Tailorings() {
     );
   };
 
+  const now = new Date();
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -57,6 +62,8 @@ export default function Tailorings() {
           </p>
         </div>
       </div>
+
+      {tailorings && tailorings.length > 0 && <AnalysisHealthSummary health={health} />}
 
       {tailorings && tailorings.length === 0 ? (
         <Card className="text-center py-12">
@@ -165,13 +172,7 @@ export default function Tailorings() {
               key: 'lastAnalysis',
               label: 'Last Analysis',
               sortable: true,
-              render: (t) => (
-                <span className="text-sm text-muted-foreground">
-                  {t.lastAnalysis
-                    ? formatDistanceToNow(new Date(t.lastAnalysis), { addSuffix: true })
-                    : 'Never'}
-                </span>
-              ),
+              render: (t) => <LastAnalysisCell status={tailoringAnalysisStatus(t)} now={now} />,
             },
           ] as TableColumn<TailoringSummary>[]}
           searchPlaceholder="Search tailorings..."

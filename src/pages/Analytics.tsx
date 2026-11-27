@@ -16,6 +16,9 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { OpenCostGate } from '@/components/analytics/OpenCostGate';
+import { SavingsSummary } from '@/components/analytics/SavingsSummary';
+import { TopGainsCard } from '@/components/analytics/TopGains';
 import {
   PieChart,
   Pie,
@@ -31,6 +34,15 @@ import {
   RadialBarChart,
   RadialBar,
 } from 'recharts';
+import {
+  chartAxisStroke,
+  chartBarCursor,
+  chartAxisTick,
+  chartGridStroke,
+  chartTooltipLabelStyle,
+  chartTooltipStyle,
+  chartTrackFill,
+} from '@/lib/chartTheme';
 
 const COLORS = {
   cpu: '#3b82f6',      // blue
@@ -77,68 +89,93 @@ function formatCores(value: number): string {
 }
 
 export default function Analytics() {
-  // Fetch OpenCost health status
-  const { data: healthStatus, isLoading: healthLoading } = useQuery({
+  const {
+    data: healthStatus,
+    isLoading: healthLoading,
+    error: healthError,
+    refetch: refetchHealth,
+  } = useQuery({
     queryKey: ['opencost-health'],
     queryFn: () => apiClient.getOpenCostHealth(),
     refetchInterval: 60000,
   });
+  const openCostReady = !!(healthStatus?.enabled && healthStatus.connected);
 
-  // Fetch resource analytics
-  const { data: resourceAnalytics } = useQuery<ResourceAnalytics>({
-    queryKey: ['opencost-resource-analytics'],
-    queryFn: () => apiClient.getOpenCostResourceAnalytics(),
-    enabled: healthStatus?.connected ?? false,
-    refetchInterval: 30000,
-  });
-
-  // Fetch cost analytics
-  const { data: costAnalytics } = useQuery<CostAnalytics>({
-    queryKey: ['opencost-cost-analytics'],
-    queryFn: () => apiClient.getOpenCostCostAnalytics(),
-    enabled: healthStatus?.connected ?? false,
-    refetchInterval: 30000,
-  });
-
-  // Fetch cluster summary
-  const { data: clusterSummary } = useQuery<ClusterResourceSummary>({
-    queryKey: ['opencost-cluster-summary'],
-    queryFn: () => apiClient.getOpenCostClusterSummary(),
-    enabled: healthStatus?.connected ?? false,
-    refetchInterval: 30000,
-  });
-
-  // If OpenCost is not enabled/connected, show a message
-  if (!healthLoading && (!healthStatus?.enabled || !healthStatus?.connected)) {
-    return (
-      <div className="space-y-8">
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Resource Analytics</h1>
           <p className="mt-2 text-muted-foreground">
-            Real-time cluster resource analytics powered by OpenCost metrics
+            Savings from Sartor recommendations, and cluster resources and costs from OpenCost
           </p>
         </div>
 
-        <Card className="border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30">
-          <CardContent className="pt-6">
-            <div className="flex items-start gap-4">
-              <AlertCircle className="w-6 h-6 text-amber-600 dark:text-amber-400 mt-0.5" />
-              <div>
-                <h3 className="font-semibold text-amber-800 dark:text-amber-200">
-                  OpenCost Integration Required
-                </h3>
-                <p className="mt-1 text-sm text-amber-700 dark:text-amber-300">
-                  {!healthStatus?.enabled
-                    ? 'OpenCost integration is not enabled. Configure it in your Atelier resource.'
-                    : `Unable to connect to OpenCost: ${healthStatus?.error || 'Unknown error'}`}
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        {!healthLoading && (
+          <Badge
+            variant="outline"
+            className={
+              openCostReady
+                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border-green-300 dark:border-green-700'
+                : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+            }
+          >
+            {openCostReady ? (
+              <>
+                <CheckCircle className="w-3 h-3 mr-1" />
+                OpenCost connected
+              </>
+            ) : (
+              <>
+                <AlertCircle className="w-3 h-3 mr-1" />
+                OpenCost unavailable
+              </>
+            )}
+          </Badge>
+        )}
       </div>
-    );
-  }
+
+      <SavingsSummary />
+
+      <TopGainsCard />
+
+      <section className="space-y-6">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Cluster resources and costs</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Real-time allocation and cost metrics from OpenCost</p>
+        </div>
+        <OpenCostGate
+          health={healthStatus}
+          isLoading={healthLoading}
+          error={healthError}
+          onRetry={() => void refetchHealth()}
+        >
+          <OpenCostPanels />
+        </OpenCostGate>
+      </section>
+    </div>
+  );
+}
+
+function OpenCostPanels() {
+  const { data: resourceAnalytics } = useQuery<ResourceAnalytics>({
+    queryKey: ['opencost-resource-analytics'],
+    queryFn: () => apiClient.getOpenCostResourceAnalytics(),
+    refetchInterval: 30000,
+  });
+
+  const { data: costAnalytics } = useQuery<CostAnalytics>({
+    queryKey: ['opencost-cost-analytics'],
+    queryFn: () => apiClient.getOpenCostCostAnalytics(),
+    refetchInterval: 30000,
+  });
+
+  const { data: clusterSummary } = useQuery<ClusterResourceSummary>({
+    queryKey: ['opencost-cluster-summary'],
+    queryFn: () => apiClient.getOpenCostClusterSummary(),
+    refetchInterval: 30000,
+  });
 
   // Prepare chart data
   const cpuByNamespaceData = Object.entries(resourceAnalytics?.cpuByNamespace || {})
@@ -191,37 +228,6 @@ export default function Analytics() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Resource Analytics</h1>
-          <p className="mt-2 text-muted-foreground">
-            Real-time cluster resource analytics powered by OpenCost metrics
-          </p>
-        </div>
-
-        <Badge
-          variant="outline"
-          className={
-            healthStatus?.connected
-              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border-green-300 dark:border-green-700'
-              : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
-          }
-        >
-          {healthStatus?.connected ? (
-            <>
-              <CheckCircle className="w-3 h-3 mr-1" />
-              Live Data
-            </>
-          ) : (
-            <>
-              <AlertCircle className="w-3 h-3 mr-1" />
-              Disconnected
-            </>
-          )}
-        </Badge>
-      </div>
-
       {/* Cluster Overview Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="bg-gradient-to-br from-blue-50 to-blue-100 dark:from-blue-950/50 dark:to-blue-900/30 border-blue-200 dark:border-blue-800">
@@ -326,7 +332,7 @@ export default function Analytics() {
                   <RadialBar
                     dataKey="value"
                     cornerRadius={10}
-                    background={{ fill: 'hsl(var(--muted))' }}
+                    background={{ fill: chartTrackFill }}
                   />
                   <Legend
                     iconSize={10}
@@ -341,11 +347,8 @@ export default function Analytics() {
                   />
                   <Tooltip
                     formatter={(value) => [`${Number(value).toFixed(1)}%`, 'Utilization']}
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      border: '1px solid hsl(var(--border))',
-                      borderRadius: '8px',
-                    }}
+                    contentStyle={chartTooltipStyle}
+                    labelStyle={chartTooltipLabelStyle}
                   />
                 </RadialBarChart>
               </ResponsiveContainer>
@@ -395,11 +398,8 @@ export default function Analytics() {
                     </Pie>
                     <Tooltip
                       formatter={(value) => formatCurrency(Number(value))}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipStyle}
+                      labelStyle={chartTooltipLabelStyle}
                     />
                     <Legend />
                   </PieChart>
@@ -460,26 +460,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={cpuByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => `${value.toFixed(2)}`}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [formatCores(Number(value)), 'CPU']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={chartBarCursor}
                       />
                       <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                         {cpuByNamespaceData.map((entry, index) => (
@@ -509,26 +508,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={memoryByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => `${value.toFixed(0)} MB`}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [`${Number(value).toFixed(1)} MB`, 'Memory']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={chartBarCursor}
                       />
                       <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                         {memoryByNamespaceData.map((entry, index) => (
@@ -652,26 +650,25 @@ export default function Analytics() {
                 <div className="h-[350px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={costByNamespaceData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                       <XAxis
                         type="number"
                         tickFormatter={(value) => formatCurrency(value)}
-                        className="text-xs"
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <YAxis
                         type="category"
                         dataKey="name"
                         width={120}
-                        className="text-xs"
-                        tick={{ fontSize: 11 }}
+                        tick={chartAxisTick}
+                        stroke={chartAxisStroke}
                       />
                       <Tooltip
                         formatter={(value) => [formatCurrency(Number(value)), 'Hourly Cost']}
-                        contentStyle={{
-                          backgroundColor: 'hsl(var(--card))',
-                          border: '1px solid hsl(var(--border))',
-                          borderRadius: '8px',
-                        }}
+                        contentStyle={chartTooltipStyle}
+                        labelStyle={chartTooltipLabelStyle}
+                        cursor={chartBarCursor}
                       />
                       <Bar dataKey="cost" radius={[0, 4, 4, 0]}>
                         {costByNamespaceData.map((entry, index) => (
