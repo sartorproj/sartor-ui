@@ -2,8 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../lib/api';
 import type { TailoringSummary } from '../lib/api';
 import { Scissors, Pause, CheckCircle, AlertCircle, ExternalLink } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
 import { DataTable, type TableColumn } from '../components/DataTable';
+import { AnalysisCell, AnalysisHealthSummary } from '../components/TailoringAnalysis';
 import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 
@@ -57,6 +57,8 @@ export default function Tailorings() {
           </p>
         </div>
       </div>
+
+      <AnalysisHealthSummary tailorings={tailorings ?? []} />
 
       {tailorings && tailorings.length === 0 ? (
         <Card className="text-center py-12">
@@ -165,13 +167,7 @@ export default function Tailorings() {
               key: 'lastAnalysis',
               label: 'Last Analysis',
               sortable: true,
-              render: (t) => (
-                <span className="text-sm text-muted-foreground">
-                  {t.lastAnalysis
-                    ? formatDistanceToNow(new Date(t.lastAnalysis), { addSuffix: true })
-                    : 'Never'}
-                </span>
-              ),
+              render: (t) => <AnalysisCell tailoring={t} />,
             },
           ] as TableColumn<TailoringSummary>[]}
           searchPlaceholder="Search tailorings..."

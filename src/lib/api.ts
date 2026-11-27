@@ -27,6 +27,42 @@ export interface TailoringSummary {
   prState?: string;
   prNumber?: number;
   prUrl?: string;
+  // Analysis health; older servers omit these fields. Read them through
+  // tailoringAnalysisState() rather than directly.
+  /** Status of the Analyzed condition: "True", "False" or "Unknown". */
+  analyzedCondition?: string;
+  analyzedReason?: string;
+  analyzedMessage?: string;
+  /** RFC 3339. */
+  nextAnalysisTime?: string;
+  consecutiveFailures?: number;
+}
+
+export interface TailoringAnalysisState {
+  /** Status of the Analyzed condition ("True", "False", "Unknown"), if the server reports one. */
+  status?: string;
+  reason?: string;
+  message?: string;
+  /** Parsed nextAnalysisTime; undefined when missing or unparseable. */
+  nextAnalysisTime?: Date;
+  consecutiveFailures: number;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+export function tailoringAnalysisState(summary: TailoringSummary): TailoringAnalysisState {
+  const next = nonEmptyString(summary.nextAnalysisTime);
+  const nextDate = next ? new Date(next) : undefined;
+  const failures = Number(summary.consecutiveFailures);
+  return {
+    status: nonEmptyString(summary.analyzedCondition),
+    reason: nonEmptyString(summary.analyzedReason),
+    message: nonEmptyString(summary.analyzedMessage),
+    nextAnalysisTime: nextDate && !Number.isNaN(nextDate.getTime()) ? nextDate : undefined,
+    consecutiveFailures: Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0,
+  };
 }
 
 export interface Tailoring {
@@ -417,6 +453,286 @@ export function forecastError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
+export const ANALYTICS_PATHS = {
+  savings: '/api/v1/analytics/savings',
+  topGains: '/api/v1/analytics/top-gains',
+} as const;
+
+export const MAX_TOP_GAINS_LIMIT = 200;
+
+/** The server does not have the requested endpoint (it predates it). */
+export class EndpointUnavailableError extends Error {
+  constructor(message = 'This needs a newer Sartor server version.') {
+    super(message);
+    this.name = 'EndpointUnavailableError';
+  }
+}
+
+/**
+ * Converts a failed request into an Error carrying the server's message. A 404
+ * without a JSON error body comes from a server without the endpoint and
+ * becomes an EndpointUnavailableError.
+ */
+export function endpointError(err: unknown, what: string): Error {
+  if (axios.isAxiosError(err)) {
+    const body: unknown = err.response?.data;
+    const serverMessage =
+      body && typeof body === 'object' && typeof (body as ApiResponse<unknown>).error === 'string'
+        ? (body as ApiResponse<unknown>).error?.trim()
+        : undefined;
+    if (err.response?.status === 404 && !serverMessage) return new EndpointUnavailableError();
+    if (serverMessage) return new Error(serverMessage);
+    if (err.response) return new Error(`${what} request failed with status ${err.response.status}`);
+    return new Error(err.message || `${what} request failed`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/** CPU request change in cores, summed over containers and multiplied by replicas. */
+export interface CpuSavings {
+  /** Sum of request decreases (current above recommended). */
+  reclaimableCores: number;
+  /** Sum of request increases (recommended above current). */
+  increaseCores: number;
+  /** reclaimableCores - increaseCores. */
+  netCores: number;
+}
+
+/** Memory request change in GiB, summed over containers and multiplied by replicas. */
+export interface MemorySavings {
+  reclaimableGiB: number;
+  increaseGiB: number;
+  netGiB: number;
+}
+
+/** Hourly cost of the request change, in the unit of the prices sent with the request. */
+export interface CostSavings {
+  reclaimablePerHour: number;
+  increasePerHour: number;
+  netPerHour: number;
+}
+
+export interface SavingsAmounts {
+  cpu: CpuSavings;
+  memory: MemorySavings;
+  /** Only present when the request carried a price. */
+  cost?: CostSavings;
+}
+
+export interface SavingsGroup extends SavingsAmounts {
+  /** spec.target.cluster; empty when the Tailorings set none. */
+  cluster: string;
+  /** Workload namespace; only set in byNamespace. */
+  namespace?: string;
+  /** Included Tailorings in the group. */
+  tailorings: number;
+}
+
+/** Which Tailorings a result covers. */
+export interface SavingsCounts {
+  total: number;
+  included: number;
+  skippedNoAnalysis: number;
+  skippedNoReplicas: number;
+  skippedNoCurrentRequest: number;
+}
+
+export interface SavingsPricing {
+  cpuPricePerCoreHour?: number;
+  memPricePerGiBHour?: number;
+}
+
+export interface SavingsReport {
+  totals: SavingsAmounts;
+  byCluster: SavingsGroup[];
+  /** Flat list keyed by cluster and namespace. */
+  byNamespace: SavingsGroup[];
+  tailorings: SavingsCounts;
+  /** Echo of the prices used for the cost figures. */
+  pricing?: SavingsPricing;
+}
+
+/** Kubernetes quantities as serialized by the server, e.g. "250m", "512Mi". */
+export interface ResourceValues {
+  cpu?: string;
+  memory?: string;
+}
+
+export interface ContainerGain {
+  cluster: string;
+  /** Namespace and name of the Tailoring. */
+  namespace: string;
+  tailoring: string;
+  workloadKind: string;
+  workloadName: string;
+  workloadNamespace: string;
+  container: string;
+  replicas: number;
+  /** Per-pod requests. */
+  currentRequests?: ResourceValues;
+  recommendedRequests?: ResourceValues;
+  /** (current - recommended) x replicas: positive when reclaimable, negative for an increase, absent when a request is missing. */
+  cpuSavingCores?: number;
+  memorySavingGiB?: number;
+}
+
+export interface TopGainsReport {
+  limit: number;
+  byCPU: ContainerGain[];
+  byMemory: ContainerGain[];
+  tailorings: SavingsCounts;
+}
+
+function finiteNumber(value: unknown): number {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined;
+}
+
+function count(value: unknown): number {
+  return Math.max(0, Math.round(finiteNumber(value)));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeAmounts(raw: unknown): SavingsAmounts {
+  const r = asRecord(raw);
+  const cpu = asRecord(r.cpu);
+  const memory = asRecord(r.memory);
+  const amounts: SavingsAmounts = {
+    cpu: {
+      reclaimableCores: finiteNumber(cpu.reclaimableCores),
+      increaseCores: finiteNumber(cpu.increaseCores),
+      netCores: finiteNumber(cpu.netCores),
+    },
+    memory: {
+      reclaimableGiB: finiteNumber(memory.reclaimableGiB),
+      increaseGiB: finiteNumber(memory.increaseGiB),
+      netGiB: finiteNumber(memory.netGiB),
+    },
+  };
+  if (r.cost && typeof r.cost === 'object') {
+    const cost = asRecord(r.cost);
+    amounts.cost = {
+      reclaimablePerHour: finiteNumber(cost.reclaimablePerHour),
+      increasePerHour: finiteNumber(cost.increasePerHour),
+      netPerHour: finiteNumber(cost.netPerHour),
+    };
+  }
+  return amounts;
+}
+
+function normalizeGroup(raw: unknown): SavingsGroup {
+  const r = asRecord(raw);
+  const group: SavingsGroup = {
+    cluster: nonEmptyString(r.cluster) ?? '',
+    tailorings: count(r.tailorings),
+    ...normalizeAmounts(raw),
+  };
+  if (r.namespace !== undefined) group.namespace = nonEmptyString(r.namespace) ?? '';
+  return group;
+}
+
+function normalizeCounts(raw: unknown): SavingsCounts {
+  const r = asRecord(raw);
+  return {
+    total: count(r.total),
+    included: count(r.included),
+    skippedNoAnalysis: count(r.skippedNoAnalysis),
+    skippedNoReplicas: count(r.skippedNoReplicas),
+    skippedNoCurrentRequest: count(r.skippedNoCurrentRequest),
+  };
+}
+
+/** Coerces a savings response into SavingsReport, tolerating missing or malformed fields. */
+export function normalizeSavings(raw: unknown): SavingsReport {
+  const r = asRecord(raw);
+  const report: SavingsReport = {
+    totals: normalizeAmounts(r.totals),
+    byCluster: asList(r.byCluster).map(normalizeGroup),
+    byNamespace: asList(r.byNamespace).map(normalizeGroup),
+    tailorings: normalizeCounts(r.tailorings),
+  };
+  if (r.pricing && typeof r.pricing === 'object') {
+    const pricing = asRecord(r.pricing);
+    report.pricing = {
+      cpuPricePerCoreHour: optionalNumber(pricing.cpuPricePerCoreHour),
+      memPricePerGiBHour: optionalNumber(pricing.memPricePerGiBHour),
+    };
+  }
+  return report;
+}
+
+function normalizeResourceValues(raw: unknown): ResourceValues | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = asRecord(raw);
+  return { cpu: nonEmptyString(r.cpu), memory: nonEmptyString(r.memory) };
+}
+
+function normalizeGain(raw: unknown): ContainerGain {
+  const g = asRecord(raw);
+  return {
+    cluster: nonEmptyString(g.cluster) ?? '',
+    namespace: nonEmptyString(g.namespace) ?? '',
+    tailoring: nonEmptyString(g.tailoring) ?? '',
+    workloadKind: nonEmptyString(g.workloadKind) ?? '',
+    workloadName: nonEmptyString(g.workloadName) ?? '',
+    workloadNamespace: nonEmptyString(g.workloadNamespace) ?? '',
+    container: nonEmptyString(g.container) ?? '',
+    replicas: count(g.replicas),
+    currentRequests: normalizeResourceValues(g.currentRequests),
+    recommendedRequests: normalizeResourceValues(g.recommendedRequests),
+    cpuSavingCores: optionalNumber(g.cpuSavingCores),
+    memorySavingGiB: optionalNumber(g.memorySavingGiB),
+  };
+}
+
+/** Coerces a top-gains response into TopGainsReport, tolerating missing or malformed fields. */
+export function normalizeTopGains(raw: unknown): TopGainsReport {
+  const r = asRecord(raw);
+  return {
+    limit: count(r.limit),
+    byCPU: asList(r.byCPU).map(normalizeGain),
+    byMemory: asList(r.byMemory).map(normalizeGain),
+    tailorings: normalizeCounts(r.tailorings),
+  };
+}
+
+export function savingsParams(pricing?: SavingsPricing): Record<string, string> {
+  const params: Record<string, string> = {};
+  const set = (name: keyof SavingsPricing) => {
+    const value = pricing?.[name];
+    if (value !== undefined && Number.isFinite(value) && value >= 0) params[name] = String(value);
+  };
+  set('cpuPricePerCoreHour');
+  set('memPricePerGiBHour');
+  return params;
+}
+
+async function getAnalytics<T>(path: string, what: string, params: Record<string, string>): Promise<T | undefined> {
+  let body: ApiResponse<T>;
+  try {
+    body = (await api.get<ApiResponse<T>>(path, { params })).data;
+  } catch (err) {
+    throw endpointError(err, what);
+  }
+  if (body && typeof body === 'object' && body.success === false) {
+    throw new Error((typeof body.error === 'string' && body.error.trim()) || `${what} request failed`);
+  }
+  return body?.data;
+}
+
 export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
   namespace: string;
   name: string;
@@ -558,6 +874,18 @@ export const apiClient = {
       throw new Error((typeof body?.error === 'string' && body.error.trim()) || 'The server returned no forecast');
     }
     return body.data;
+  },
+
+  // Right-sizing analytics; these do not depend on OpenCost. A server without
+  // the endpoint rejects with EndpointUnavailableError.
+  getSavingsSummary: async (pricing?: SavingsPricing): Promise<SavingsReport> =>
+    normalizeSavings(await getAnalytics<unknown>(ANALYTICS_PATHS.savings, 'Savings', savingsParams(pricing))),
+
+  // The server accepts a limit from 1 to MAX_TOP_GAINS_LIMIT.
+  getTopGains: async (limit = 10): Promise<TopGainsReport> => {
+    const n = Number.isFinite(limit) ? Math.min(MAX_TOP_GAINS_LIMIT, Math.max(1, Math.floor(limit))) : 10;
+    const params = { limit: String(n) };
+    return normalizeTopGains(await getAnalytics<unknown>(ANALYTICS_PATHS.topGains, 'Top gains', params));
   },
 
   // OpenCost APIs

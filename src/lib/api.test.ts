@@ -5,6 +5,8 @@ let lastQuery: URLSearchParams | undefined;
 let lastPath: string | undefined;
 // Response for /api/v1/prometheus/forecast; every other path answers like the metrics endpoint.
 let forecastResponse: () => Response = () => Response.json({ success: true, data: {} });
+// Response for /api/v1/analytics/*.
+let analyticsResponse: () => Response = () => Response.json({ success: true, data: {} });
 const server = Bun.serve({
   port: 0,
   fetch(req) {
@@ -12,6 +14,7 @@ const server = Bun.serve({
     lastQuery = url.searchParams;
     lastPath = url.pathname;
     if (url.pathname === '/api/v1/prometheus/forecast') return forecastResponse();
+    if (url.pathname.startsWith('/api/v1/analytics/')) return analyticsResponse();
     return Response.json({ success: true, data: [{ timestamp: 1, value: 2 }] });
   },
 });
@@ -21,8 +24,21 @@ afterAll(() => {
 
 // The API base URL is read when the module loads, so import it after the stub server is up.
 process.env.VITE_API_URL = server.url.origin;
-const { apiClient, ForecastUnavailableError, forecastError, forecastParams, prometheusMetricsParams, tailoringMetricsTarget } =
-  await import('./api');
+const {
+  default: axiosInstance,
+  apiClient,
+  EndpointUnavailableError,
+  ForecastUnavailableError,
+  forecastError,
+  forecastParams,
+  normalizeSavings,
+  normalizeTopGains,
+  prometheusMetricsParams,
+  tailoringAnalysisState,
+  tailoringMetricsTarget,
+} = await import('./api');
+// Another test file may have loaded the module first, with the default base URL.
+axiosInstance.defaults.baseURL = server.url.origin;
 type Tailoring = import('./api').Tailoring;
 
 const tailoring = (target: Tailoring['spec']['target'], namespace = 'example-system'): Tailoring => ({
@@ -330,5 +346,239 @@ describe('forecastError', () => {
     const err = new Error('boom');
     expect(forecastError(err)).toBe(err);
     expect(forecastError('boom').message).toBe('boom');
+  });
+});
+
+// Shapes as returned by the server's /api/v1/analytics endpoints.
+const amounts = (reclaimableCores: number, increaseCores: number, reclaimableGiB: number, increaseGiB: number) => ({
+  cpu: { reclaimableCores, increaseCores, netCores: reclaimableCores - increaseCores },
+  memory: { reclaimableGiB, increaseGiB, netGiB: reclaimableGiB - increaseGiB },
+});
+
+const counts = {
+  total: 7,
+  included: 4,
+  skippedNoAnalysis: 1,
+  skippedNoReplicas: 1,
+  skippedNoCurrentRequest: 1,
+};
+
+const savingsReport = {
+  totals: amounts(1.5, 0.25, 2, 0.5),
+  byCluster: [
+    { cluster: '', tailorings: 1, ...amounts(0, 0.25, 0, 0.5) },
+    { cluster: 'example-cluster', tailorings: 3, ...amounts(1.5, 0, 2, 0) },
+  ],
+  byNamespace: [
+    { cluster: '', namespace: 'example-namespace', tailorings: 1, ...amounts(0, 0.25, 0, 0.5) },
+    { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 2, ...amounts(1.45, 0, 1.8828125, 0) },
+    { cluster: 'example-cluster', namespace: 'example-small', tailorings: 1, ...amounts(0.05, 0, 0.1171875, 0) },
+  ],
+  tailorings: counts,
+};
+
+describe('apiClient.getSavingsSummary', () => {
+  test('requests the savings endpoint and keeps the server shape', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: savingsReport });
+    const report = await apiClient.getSavingsSummary();
+    expect(lastPath).toBe('/api/v1/analytics/savings');
+    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
+    expect(report).toEqual(savingsReport);
+  });
+
+  test('sends the price parameters the server reads, only when valid', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: savingsReport });
+    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03, memPricePerGiBHour: 0.004 });
+    expect(lastQuery?.get('cpuPricePerCoreHour')).toBe('0.03');
+    expect(lastQuery?.get('memPricePerGiBHour')).toBe('0.004');
+    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: -1, memPricePerGiBHour: NaN });
+    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
+  });
+
+  test('keeps cost and pricing when the server priced the request', async () => {
+    const cost = { reclaimablePerHour: 0.05, increasePerHour: 0.01, netPerHour: 0.04 };
+    analyticsResponse = () =>
+      Response.json({
+        success: true,
+        data: { ...savingsReport, totals: { ...savingsReport.totals, cost }, pricing: { cpuPricePerCoreHour: 0.03 } },
+      });
+    const report = await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03 });
+    expect(report.totals.cost).toEqual(cost);
+    expect(report.pricing).toEqual({ cpuPricePerCoreHour: 0.03, memPricePerGiBHour: undefined });
+  });
+
+  test('a plain 404 from a server without the endpoint is EndpointUnavailableError', async () => {
+    analyticsResponse = () => new Response('404 page not found\n', { status: 404 });
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).toBeInstanceOf(EndpointUnavailableError);
+  });
+
+  test('a 404 with a JSON error is a regular error', async () => {
+    analyticsResponse = () => Response.json({ success: false, error: 'no Atelier found' }, { status: 404 });
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).not.toBeInstanceOf(EndpointUnavailableError);
+    expect(err.message).toBe('no Atelier found');
+  });
+
+  test.each([
+    ['a JSON error', () => Response.json({ success: false, error: 'listing Tailorings failed' }, { status: 500 }), 'listing Tailorings failed'],
+    ['an invalid price', () => Response.json({ success: false, error: 'invalid cpuPricePerCoreHour "x"' }, { status: 400 }), 'invalid cpuPricePerCoreHour "x"'],
+    ['an empty body', () => new Response('', { status: 500 }), 'Savings request failed with status 500'],
+    ['success: false with status 200', () => Response.json({ success: false, error: 'boom' }), 'boom'],
+  ])('rejects with the server message for %s', async (_, response, message) => {
+    analyticsResponse = response;
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).not.toBeInstanceOf(EndpointUnavailableError);
+    expect(err.message).toBe(message);
+  });
+
+  test.each([
+    ['no data', { success: true }],
+    ['null data', { success: true, data: null }],
+    ['an empty report', { success: true, data: { totals: amounts(0, 0, 0, 0), byCluster: [], byNamespace: [], tailorings: { total: 0 } } }],
+    ['lists that are not lists', { success: true, data: { byCluster: 'nope', byNamespace: {} } }],
+  ])('returns an empty report for %s', async (_, body) => {
+    analyticsResponse = () => Response.json(body);
+    const report = await apiClient.getSavingsSummary();
+    expect(report.byCluster).toEqual([]);
+    expect(report.byNamespace).toEqual([]);
+    expect(report.totals).toEqual(amounts(0, 0, 0, 0));
+    expect(report.tailorings).toEqual({ total: 0, included: 0, skippedNoAnalysis: 0, skippedNoReplicas: 0, skippedNoCurrentRequest: 0 });
+  });
+});
+
+describe('normalizeSavings', () => {
+  test('coerces malformed numbers and keeps negatives', () => {
+    const report = normalizeSavings({
+      totals: { cpu: { reclaimableCores: '0.5', increaseCores: 'x', netCores: -0.25 }, memory: { netGiB: Infinity } },
+      byCluster: [{ cluster: 42, tailorings: -3 }, null],
+      tailorings: { total: '2', included: 1.6 },
+    });
+    expect(report.totals).toEqual({
+      cpu: { reclaimableCores: 0.5, increaseCores: 0, netCores: -0.25 },
+      memory: { reclaimableGiB: 0, increaseGiB: 0, netGiB: 0 },
+    });
+    expect(report.byCluster.map((g) => [g.cluster, g.tailorings])).toEqual([['', 0], ['', 0]]);
+    expect(report.byCluster[0].namespace).toBeUndefined();
+    expect(report.tailorings.total).toBe(2);
+    expect(report.tailorings.included).toBe(2);
+  });
+
+  test('marks byNamespace entries without a namespace with an empty one', () => {
+    const report = normalizeSavings({ byNamespace: [{ cluster: 'example-cluster', namespace: '', tailorings: 1 }] });
+    expect(report.byNamespace[0].namespace).toBe('');
+  });
+});
+
+describe('apiClient.getTopGains', () => {
+  const gain = (container: string, cpuSavingCores?: number, memorySavingGiB?: number) => ({
+    cluster: 'example-cluster',
+    namespace: 'example-namespace',
+    tailoring: 'example-app',
+    workloadKind: 'Deployment',
+    workloadName: 'example-app',
+    workloadNamespace: 'example-namespace',
+    container,
+    replicas: 3,
+    currentRequests: { cpu: '500m', memory: '512Mi' },
+    recommendedRequests: { cpu: '200m', memory: '256Mi' },
+    ...(cpuSavingCores === undefined ? {} : { cpuSavingCores }),
+    ...(memorySavingGiB === undefined ? {} : { memorySavingGiB }),
+  });
+  const topGains = { limit: 5, byCPU: [gain('app', 0.9, 0.75)], byMemory: [gain('app', 0.9, 0.75), gain('cache', undefined, 2)], tailorings: counts };
+
+  test('sends the limit and keeps the server shape', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: topGains });
+    const report = await apiClient.getTopGains(5);
+    expect(lastPath).toBe('/api/v1/analytics/top-gains');
+    expect(lastQuery?.get('limit')).toBe('5');
+    expect(report.limit).toBe(5);
+    expect(report.tailorings).toEqual(counts);
+    expect(report.byCPU).toEqual([gain('app', 0.9, 0.75)]);
+    expect(report.byMemory[1].cpuSavingCores).toBeUndefined();
+    expect(report.byMemory[1].memorySavingGiB).toBe(2);
+  });
+
+  test.each([
+    [0, '1'],
+    [2.7, '2'],
+    [1000, '200'],
+    [NaN, '10'],
+  ])('keeps limit %p within what the server accepts (%s)', async (limit, sent) => {
+    analyticsResponse = () => Response.json({ success: true, data: topGains });
+    await apiClient.getTopGains(limit);
+    expect(lastQuery?.get('limit')).toBe(sent);
+  });
+
+  test.each([
+    ['null', null],
+    ['an object without lists', { foo: 1 }],
+    ['lists that are not lists', { byCPU: 'x', byMemory: null }],
+  ])('returns no gains for %s', (_, raw) => {
+    const report = normalizeTopGains(raw);
+    expect(report.byCPU).toEqual([]);
+    expect(report.byMemory).toEqual([]);
+  });
+
+  test('drops non-numeric savings and empty request values', () => {
+    const [g] = normalizeTopGains({ byCPU: [{ ...gain('app'), cpuSavingCores: 'lots', currentRequests: { cpu: '' } }] }).byCPU;
+    expect(g.cpuSavingCores).toBeUndefined();
+    expect(g.currentRequests).toEqual({ cpu: undefined, memory: undefined });
+  });
+
+  test('a plain 404 is EndpointUnavailableError', async () => {
+    analyticsResponse = () => new Response('404 page not found\n', { status: 404 });
+    expect(await apiClient.getTopGains().catch((e) => e)).toBeInstanceOf(EndpointUnavailableError);
+  });
+});
+
+describe('tailoringAnalysisState', () => {
+  const summary = {
+    name: 'example-app',
+    namespace: 'example-namespace',
+    targetKind: 'Deployment',
+    targetName: 'example-app',
+    paused: false,
+    targetFound: false,
+    vpaDetected: false,
+    containerCount: 0,
+    readyCondition: 'False',
+  };
+
+  test('reads the Analyzed condition fields', () => {
+    expect(
+      tailoringAnalysisState({
+        ...summary,
+        analyzedCondition: 'False',
+        analyzedReason: 'TargetNotFound',
+        analyzedMessage: 'Deployment example-namespace/example-app not found',
+        nextAnalysisTime: '2026-01-01T00:05:00Z',
+        consecutiveFailures: 3,
+      }),
+    ).toEqual({
+      status: 'False',
+      reason: 'TargetNotFound',
+      message: 'Deployment example-namespace/example-app not found',
+      nextAnalysisTime: new Date('2026-01-01T00:05:00Z'),
+      consecutiveFailures: 3,
+    });
+  });
+
+  test('handles a summary from an older server', () => {
+    expect(tailoringAnalysisState(summary)).toEqual({
+      status: undefined,
+      reason: undefined,
+      message: undefined,
+      nextAnalysisTime: undefined,
+      consecutiveFailures: 0,
+    });
+  });
+
+  test('ignores unparseable times, bogus counts and blank strings', () => {
+    const state = tailoringAnalysisState({ ...summary, analyzedCondition: ' ', nextAnalysisTime: 'soon', consecutiveFailures: -2, analyzedReason: '  ' });
+    expect(state.status).toBeUndefined();
+    expect(state.nextAnalysisTime).toBeUndefined();
+    expect(state.consecutiveFailures).toBe(0);
+    expect(state.reason).toBeUndefined();
   });
 });

@@ -3,6 +3,14 @@ import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../lib/api';
 import type { OpenCostAllocation, OpenCostSummary } from '../lib/api';
 import {
+  chartAxisStroke,
+  chartAxisTick,
+  chartCursorFill,
+  chartGridStroke,
+  chartTooltipContentStyle,
+  chartTooltipLabelStyle,
+} from '../lib/chartTheme';
+import {
   DollarSign,
   Cpu,
   MemoryStick,
@@ -324,11 +332,9 @@ export default function Costs() {
                     </Pie>
                     <Tooltip
                       formatter={(value) => formatCurrency(Number(value))}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipContentStyle}
+                      labelStyle={chartTooltipLabelStyle}
+                      cursor={{ fill: chartCursorFill }}
                     />
                     <Legend />
                   </PieChart>
@@ -356,29 +362,28 @@ export default function Costs() {
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={namespaceCostData} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                     <XAxis
                       type="number"
                       tickFormatter={(value) => formatCurrency(value)}
-                      className="text-xs"
+                      tick={chartAxisTick}
+                      stroke={chartAxisStroke}
                     />
                     <YAxis
                       type="category"
                       dataKey="name"
                       width={120}
-                      className="text-xs"
-                      tick={{ fontSize: 11 }}
+                      tick={chartAxisTick}
+                      stroke={chartAxisStroke}
                     />
                     <Tooltip
                       formatter={(value, name) => [
                         formatCurrency(Number(value)),
                         name === 'cpuCost' ? 'CPU' : name === 'ramCost' ? 'Memory' : 'Total',
                       ]}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipContentStyle}
+                      labelStyle={chartTooltipLabelStyle}
+                      cursor={{ fill: chartCursorFill }}
                     />
                     <Bar dataKey="cpuCost" stackId="a" fill={COST_COLORS.cpu} name="CPU" />
                     <Bar dataKey="ramCost" stackId="a" fill={COST_COLORS.ram} name="Memory" />
