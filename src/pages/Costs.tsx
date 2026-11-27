@@ -26,6 +26,14 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  chartAxisStroke,
+  chartBarCursor,
+  chartAxisTick,
+  chartGridStroke,
+  chartTooltipLabelStyle,
+  chartTooltipStyle,
+} from '@/lib/chartTheme';
+import {
   PieChart,
   Pie,
   Cell,
@@ -324,11 +332,8 @@ export default function Costs() {
                     </Pie>
                     <Tooltip
                       formatter={(value) => formatCurrency(Number(value))}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipStyle}
+                      labelStyle={chartTooltipLabelStyle}
                     />
                     <Legend />
                   </PieChart>
@@ -356,29 +361,28 @@ export default function Costs() {
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={namespaceCostData} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartGridStroke} />
                     <XAxis
                       type="number"
                       tickFormatter={(value) => formatCurrency(value)}
-                      className="text-xs"
+                      tick={chartAxisTick}
+                      stroke={chartAxisStroke}
                     />
                     <YAxis
                       type="category"
                       dataKey="name"
                       width={120}
-                      className="text-xs"
-                      tick={{ fontSize: 11 }}
+                      tick={chartAxisTick}
+                      stroke={chartAxisStroke}
                     />
                     <Tooltip
                       formatter={(value, name) => [
                         formatCurrency(Number(value)),
                         name === 'cpuCost' ? 'CPU' : name === 'ramCost' ? 'Memory' : 'Total',
                       ]}
-                      contentStyle={{
-                        backgroundColor: 'hsl(var(--card))',
-                        border: '1px solid hsl(var(--border))',
-                        borderRadius: '8px',
-                      }}
+                      contentStyle={chartTooltipStyle}
+                      labelStyle={chartTooltipLabelStyle}
+                      cursor={chartBarCursor}
                     />
                     <Bar dataKey="cpuCost" stackId="a" fill={COST_COLORS.cpu} name="CPU" />
                     <Bar dataKey="ramCost" stackId="a" fill={COST_COLORS.ram} name="Memory" />
