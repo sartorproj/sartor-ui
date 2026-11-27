@@ -39,6 +39,7 @@ export interface Tailoring {
     target: {
       kind: string;
       name: string;
+      cluster?: string;
     };
     fitProfileRef: {
       name: string;
@@ -318,6 +319,39 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
+export interface PrometheusMetricsTarget {
+  // Required by the server when the Atelier sets prometheus.clusterLabel.
+  cluster?: string;
+  // Workload kind; the server assumes Deployment when it is omitted.
+  kind?: string;
+}
+
+export function prometheusMetricsParams(
+  namespace: string,
+  podNamePrefix: string,
+  containerName: string,
+  resourceType: 'cpu' | 'memory',
+  window?: string,
+  target?: PrometheusMetricsTarget
+): Record<string, string> {
+  const params: Record<string, string> = {
+    namespace,
+    podNamePrefix,
+    containerName,
+    resourceType,
+  };
+  if (window) {
+    params.window = window;
+  }
+  if (target?.cluster) {
+    params.cluster = target.cluster;
+  }
+  if (target?.kind) {
+    params.kind = target.kind;
+  }
+  return params;
+}
+
 export const apiClient = {
   // Tailorings
   listTailorings: async (namespace?: string): Promise<TailoringSummary[]> => {
@@ -386,17 +420,10 @@ export const apiClient = {
     podNamePrefix: string,
     containerName: string,
     resourceType: 'cpu' | 'memory',
-    window?: string
+    window?: string,
+    target?: PrometheusMetricsTarget
   ): Promise<Array<{ timestamp: number; value: number; pod?: string }>> => {
-    const params: Record<string, string> = {
-      namespace,
-      podNamePrefix,
-      containerName,
-      resourceType,
-    };
-    if (window) {
-      params.window = window;
-    }
+    const params = prometheusMetricsParams(namespace, podNamePrefix, containerName, resourceType, window, target);
     const response = await api.get<ApiResponse<Array<{ timestamp: number; value: number; pod?: string }>>>(
       '/api/v1/prometheus/metrics',
       { params }

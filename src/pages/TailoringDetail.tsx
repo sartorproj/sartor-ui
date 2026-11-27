@@ -47,7 +47,8 @@ export default function TailoringDetail() {
             tailoring.spec.target.name,
             containerName,
             'cpu',
-            cpuTimeRange
+            cpuTimeRange,
+            { cluster: tailoring.spec.target.cluster, kind: tailoring.spec.target.kind }
           );
           results[containerName] = data;
         } catch (err) {
@@ -75,7 +76,8 @@ export default function TailoringDetail() {
             tailoring.spec.target.name,
             containerName,
             'memory',
-            memoryTimeRange
+            memoryTimeRange,
+            { cluster: tailoring.spec.target.cluster, kind: tailoring.spec.target.kind }
           );
           results[containerName] = data;
         } catch (err) {
