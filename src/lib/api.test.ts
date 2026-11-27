@@ -23,9 +23,10 @@ afterAll(() => {
   server.stop(true);
 });
 
-// The API base URL is read when the module loads, so import it after the stub server is up.
-process.env.VITE_API_URL = server.url.origin;
+// Other test files may load the module first, so the base URL is set on the client
+// instance rather than through VITE_API_URL, which is only read at load time.
 const {
+  default: api,
   ANALYTICS_ENDPOINTS,
   apiClient,
   EndpointUnavailableError,
@@ -38,6 +39,7 @@ const {
   tailoringAnalysisStatus,
   tailoringMetricsTarget,
 } = await import('./api');
+api.defaults.baseURL = server.url.origin;
 type Tailoring = import('./api').Tailoring;
 
 const tailoring = (target: Tailoring['spec']['target'], namespace = 'example-system'): Tailoring => ({
