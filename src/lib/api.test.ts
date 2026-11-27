@@ -173,4 +173,42 @@ describe('metrics requests for a Tailoring', () => {
     });
   });
 
+  test('getPrometheusMetricsPerPod queries the target namespace, cluster and kind', async () => {
+    const target = tailoringMetricsTarget(crossNamespace);
+    await apiClient.getPrometheusMetricsPerPod(target.namespace, target.name, 'app', 'memory', '6h', target);
+    expect(Object.fromEntries(lastQuery!)).toEqual({
+      namespace: 'example-apps',
+      podNamePrefix: 'example-app',
+      containerName: 'app',
+      resourceType: 'memory',
+      window: '6h',
+      cluster: 'example-cluster',
+      kind: 'StatefulSet',
+      perPod: 'true',
+    });
+  });
+
+  test('getPrometheusMetricsPerPod falls back to the Tailoring namespace and omits an empty cluster', async () => {
+    const target = tailoringMetricsTarget(sameNamespace);
+    await apiClient.getPrometheusMetricsPerPod(target.namespace, target.name, 'web', 'cpu', undefined, target);
+    expect(Object.fromEntries(lastQuery!)).toEqual({
+      namespace: 'example-system',
+      podNamePrefix: 'example-web',
+      containerName: 'web',
+      resourceType: 'cpu',
+      kind: 'Deployment',
+      perPod: 'true',
+    });
+  });
+
+  test('getPrometheusMetricsPerPod keeps the previous request shape when no target is given', async () => {
+    await apiClient.getPrometheusMetricsPerPod('default', 'example-app', 'app', 'cpu');
+    expect(Object.fromEntries(lastQuery!)).toEqual({
+      namespace: 'default',
+      podNamePrefix: 'example-app',
+      containerName: 'app',
+      resourceType: 'cpu',
+      perPod: 'true',
+    });
+  });
 });

@@ -458,18 +458,13 @@ export const apiClient = {
     podNamePrefix: string,
     containerName: string,
     resourceType: 'cpu' | 'memory',
-    window?: string
+    window?: string,
+    target?: PrometheusMetricsTarget
   ): Promise<Array<{ timestamp: number; value: number; pod: string }>> => {
-    const params: Record<string, string> = {
-      namespace,
-      podNamePrefix,
-      containerName,
-      resourceType,
+    const params = {
+      ...prometheusMetricsParams(namespace, podNamePrefix, containerName, resourceType, window, target),
       perPod: 'true',
     };
-    if (window) {
-      params.window = window;
-    }
     const response = await api.get<ApiResponse<Array<{ timestamp: number; value: number; pod: string }>>>(
       '/api/v1/prometheus/metrics',
       { params }
