@@ -496,6 +496,10 @@ export interface CpuSavings {
   increaseCores: number;
   /** reclaimableCores - increaseCores. */
   netCores: number;
+  /** Current requests x replicas of the included Tailorings; undefined from a server that predates it. */
+  totalRequestedCores?: number;
+  /** netCores as a percentage of totalRequestedCores, negative for a net increase; undefined when the total is zero or the server predates it. */
+  netPercent?: number;
 }
 
 /** Memory request change in GiB, summed over containers and multiplied by replicas. */
@@ -503,6 +507,8 @@ export interface MemorySavings {
   reclaimableGiB: number;
   increaseGiB: number;
   netGiB: number;
+  totalRequestedGiB?: number;
+  netPercent?: number;
 }
 
 /** Hourly cost of the request change, in the unit of the prices sent with the request. */
@@ -598,12 +604,21 @@ function count(value: unknown): number {
   return Math.max(0, Math.round(finiteNumber(value)));
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+function nonNegative(value: unknown): number | undefined {
+  const n = optionalNumber(value);
+  return n !== undefined && n >= 0 ? n : undefined;
+}
+
+export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function asList(value: unknown): unknown[] {
+export function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function setIfDefined<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined) {
+  if (value !== undefined) target[key] = value;
 }
 
 function normalizeAmounts(raw: unknown): SavingsAmounts {
@@ -622,6 +637,10 @@ function normalizeAmounts(raw: unknown): SavingsAmounts {
       netGiB: finiteNumber(memory.netGiB),
     },
   };
+  setIfDefined(amounts.cpu, 'totalRequestedCores', nonNegative(cpu.totalRequestedCores));
+  setIfDefined(amounts.cpu, 'netPercent', optionalNumber(cpu.netPercent));
+  setIfDefined(amounts.memory, 'totalRequestedGiB', nonNegative(memory.totalRequestedGiB));
+  setIfDefined(amounts.memory, 'netPercent', optionalNumber(memory.netPercent));
   if (r.cost && typeof r.cost === 'object') {
     const cost = asRecord(r.cost);
     amounts.cost = {

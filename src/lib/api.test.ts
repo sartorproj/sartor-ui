@@ -468,6 +468,36 @@ describe('normalizeSavings', () => {
     const report = normalizeSavings({ byNamespace: [{ cluster: 'example-cluster', namespace: '', tailorings: 1 }] });
     expect(report.byNamespace[0].namespace).toBe('');
   });
+
+  test('keeps requested totals and net percentages, negative ones included', () => {
+    const report = normalizeSavings({
+      totals: {
+        cpu: { reclaimableCores: 12.5, increaseCores: 1.25, netCores: 11.25, totalRequestedCores: 90, netPercent: 12.5 },
+        memory: { reclaimableGiB: 0, increaseGiB: 3, netGiB: -3, totalRequestedGiB: 60, netPercent: -5 },
+      },
+      byNamespace: [
+        { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 1, cpu: { totalRequestedCores: 0, netPercent: null } },
+      ],
+    });
+    expect(report.totals.cpu).toEqual({ reclaimableCores: 12.5, increaseCores: 1.25, netCores: 11.25, totalRequestedCores: 90, netPercent: 12.5 });
+    expect(report.totals.memory.netPercent).toBe(-5);
+    expect(report.byNamespace[0].cpu.totalRequestedCores).toBe(0);
+    expect(report.byNamespace[0].cpu.netPercent).toBeUndefined();
+  });
+
+  test.each([
+    ['missing (older server)', {}],
+    ['null', { totalRequestedCores: null, netPercent: null }],
+    ['garbage', { totalRequestedCores: 'lots', netPercent: { value: 3 } }],
+    ['infinite', { totalRequestedCores: Infinity, netPercent: -Infinity }],
+    ['a negative total', { totalRequestedCores: -4 }],
+  ])('leaves requested totals and percentages unset when %s', (_, cpu) => {
+    const report = normalizeSavings({ totals: { cpu, memory: cpu } });
+    expect(report.totals.cpu.totalRequestedCores).toBeUndefined();
+    expect(report.totals.cpu.netPercent).toBeUndefined();
+    expect(report.totals.memory.totalRequestedGiB).toBeUndefined();
+    expect('totalRequestedCores' in report.totals.cpu).toBe(false);
+  });
 });
 
 describe('apiClient.getTopGains', () => {

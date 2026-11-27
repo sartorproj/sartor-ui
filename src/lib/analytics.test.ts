@@ -2,13 +2,18 @@ import { describe, expect, test } from 'bun:test';
 import {
   analysisHealth,
   clusterLabel,
+  cpuNetChangeText,
   describeAnalysis,
   formatCores,
   formatCostPerHour,
   formatGiB,
+  formatPercent,
   gainsFor,
   groupSavingsByCluster,
+  hasRequestedTotals,
   isOpenCostReady,
+  memoryNetChangeText,
+  percentOf,
   openCostProblem,
   skippedBreakdown,
   skippedCount,
@@ -35,6 +40,63 @@ describe('formatCores', () => {
     [1234.5, '1,235 cores'],
   ])('%p -> %s', (value, expected) => {
     expect(formatCores(value)).toBe(expected);
+  });
+});
+
+describe('formatPercent', () => {
+  test.each([
+    [undefined, '—'],
+    [NaN, '—'],
+    [Infinity, '—'],
+    [0, '0%'],
+    [-0, '0%'],
+    [12.5, '12.5%'],
+    [-4.854, '-4.9%'],
+    [0.01, '< 0.1%'],
+    [-0.01, '> -0.1%'],
+    [100, '100%'],
+    [-350, '-350%'],
+    [12345.67, '12,345.7%'],
+  ])('%p -> %s', (value, expected) => {
+    expect(formatPercent(value)).toBe(expected);
+  });
+});
+
+describe('percentOf', () => {
+  test('is undefined for a zero, negative or unknown total', () => {
+    expect(percentOf(5, 0)).toBeUndefined();
+    expect(percentOf(5, -1)).toBeUndefined();
+    expect(percentOf(5, undefined)).toBeUndefined();
+    expect(percentOf(NaN, 10)).toBeUndefined();
+    expect(percentOf(-20, 400)).toBe(-5);
+  });
+});
+
+describe('net change text', () => {
+  test('describes the requested total and the net change', () => {
+    expect(cpuNetChangeText({ reclaimableCores: 0, increaseCores: 20, netCores: -20, totalRequestedCores: 412, netPercent: (-20 / 412) * 100 })).toBe(
+      '412 cores requested, net -20 cores (-4.9%)',
+    );
+    expect(memoryNetChangeText({ reclaimableGiB: 300, increaseGiB: 0, netGiB: 300, totalRequestedGiB: 1536, netPercent: 19.53 })).toBe(
+      '1.5 TiB requested, net 300 GiB (19.5%)',
+    );
+  });
+
+  test('uses dashes for a missing total or percentage', () => {
+    expect(cpuNetChangeText({ reclaimableCores: 0, increaseCores: 0, netCores: 0, totalRequestedCores: 0 })).toBe('0 cores requested, net 0 cores (—)');
+    expect(memoryNetChangeText({ reclaimableGiB: 0, increaseGiB: 0, netGiB: 0 })).toBe('— requested, net 0 GiB (—)');
+  });
+});
+
+describe('hasRequestedTotals', () => {
+  test('is false for a server that predates the totals', () => {
+    expect(hasRequestedTotals(normalizeSavings({ totals: amounts(1, 0, 1, 0), byCluster: [{ cluster: '', ...amounts(1, 0, 1, 0) }] }))).toBe(false);
+    expect(hasRequestedTotals(normalizeSavings({}))).toBe(false);
+  });
+
+  test('is true when any group has one, even a zero total', () => {
+    expect(hasRequestedTotals(normalizeSavings({ totals: { cpu: { totalRequestedCores: 0, netPercent: null } } }))).toBe(true);
+    expect(hasRequestedTotals(normalizeSavings({ byNamespace: [{ cluster: '', memory: { totalRequestedGiB: 2 } }] }))).toBe(true);
   });
 });
 
@@ -123,6 +185,40 @@ describe('groupSavingsByCluster', () => {
     expect(cluster.cpu).toEqual({ reclaimableCores: 1.5, increaseCores: 0.25, netCores: 1.25 });
     expect(cluster.memory).toEqual({ reclaimableGiB: 1, increaseGiB: 0.25, netGiB: 0.75 });
     expect(cluster.cost).toEqual({ reclaimablePerHour: 1, increasePerHour: 0, netPerHour: 1 });
+  });
+
+  test('sums requested totals of derived clusters and recomputes the percentage from them', () => {
+    const ns = (namespace: string, net: number, total: number | null) => ({
+      cluster: 'example-cluster',
+      namespace,
+      tailorings: 1,
+      cpu: { netCores: net, totalRequestedCores: total, netPercent: total ? (net / total) * 100 : null },
+      memory: { netGiB: net, totalRequestedGiB: total, netPercent: total ? (net / total) * 100 : null },
+    });
+    const [cluster] = groupSavingsByCluster(normalizeSavings({ byNamespace: [ns('example-a', 10, 100), ns('example-b', -30, 100)] }));
+    expect(cluster.cpu.totalRequestedCores).toBe(200);
+    expect(cluster.cpu.netPercent).toBe(-10);
+    expect(cluster.memory.totalRequestedGiB).toBe(200);
+    expect(cluster.memory.netPercent).toBe(-10);
+
+    const [zero] = groupSavingsByCluster(normalizeSavings({ byNamespace: [ns('example-a', 0, 0), ns('example-b', 0, 0)] }));
+    expect(zero.cpu.totalRequestedCores).toBe(0);
+    expect(zero.cpu.netPercent).toBeUndefined();
+
+    const [older] = groupSavingsByCluster(normalizeSavings({ byNamespace: [ns('example-a', 1, 10), { cluster: 'example-cluster', namespace: 'example-b', tailorings: 1 }] }));
+    expect(older.cpu.totalRequestedCores).toBeUndefined();
+    expect(older.cpu.netPercent).toBeUndefined();
+  });
+
+  test('keeps the server percentages of clusters listed in byCluster', () => {
+    const [cluster] = groupSavingsByCluster(
+      normalizeSavings({
+        byCluster: [{ cluster: 'example-cluster', tailorings: 1, cpu: { netCores: -20, totalRequestedCores: 412, netPercent: -4.85 } }],
+        byNamespace: [{ cluster: 'example-cluster', namespace: 'example-a', tailorings: 1, cpu: { netCores: 1, totalRequestedCores: 1, netPercent: 100 } }],
+      }),
+    );
+    expect(cluster.cpu.totalRequestedCores).toBe(412);
+    expect(cluster.cpu.netPercent).toBe(-4.85);
   });
 
   test('handles an empty report and clusters without namespaces', () => {
