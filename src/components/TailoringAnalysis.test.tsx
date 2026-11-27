@@ -34,7 +34,7 @@ describe('AnalysisCell', () => {
   test('shows the failure reason with the message as a tooltip and the next retry', () => {
     const html = cell(
       tailoring({
-        analyzedStatus: 'False',
+        analyzedCondition: 'False',
         analyzedReason: 'TargetNotFound',
         analyzedMessage: 'Deployment example-namespace/example-app not found',
         nextAnalysisTime: '2026-01-01T12:05:00Z',
@@ -48,13 +48,32 @@ describe('AnalysisCell', () => {
     expect(html).toContain('3 failures in a row');
   });
 
+  test('shows FitProfileFallback as a warning with its message, not as a failure', () => {
+    const html = cell(
+      tailoring({
+        lastAnalysis: '2026-01-01T11:00:00Z',
+        analyzedCondition: 'True',
+        analyzedReason: 'FitProfileFallback',
+        analyzedMessage: 'Resource analysis completed with a fallback: unknown strategy',
+        nextAnalysisTime: '2026-01-01T13:00:00Z',
+      }),
+    );
+    expect(html).toContain('about 1 hour ago');
+    expect(html).toContain('FitProfileFallback');
+    expect(html).toContain('title="Resource analysis completed with a fallback: unknown strategy"');
+    expect(html).toContain('text-amber-800');
+    expect(html).not.toContain('text-red-800');
+    expect(html).toContain('Next analysis in about 1 hour');
+    expect(html).not.toContain('Retry');
+  });
+
   test('marks a retry time in the past as overdue', () => {
-    const html = cell(tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound', nextAnalysisTime: '2026-01-01T11:50:00Z' }));
+    const html = cell(tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound', nextAnalysisTime: '2026-01-01T11:50:00Z' }));
     expect(html).toContain('Retry overdue (due 10 minutes ago)');
   });
 
   test('shows the next scheduled analysis for a healthy Tailoring', () => {
-    const html = cell(tailoring({ analyzedStatus: 'True', lastAnalysis: '2026-01-01T11:00:00Z', nextAnalysisTime: '2026-01-01T13:00:00Z' }));
+    const html = cell(tailoring({ analyzedCondition: 'True', lastAnalysis: '2026-01-01T11:00:00Z', nextAnalysisTime: '2026-01-01T13:00:00Z' }));
     expect(html).toContain('Next analysis in about 1 hour');
     expect(html).not.toContain('Retry');
   });
@@ -66,16 +85,19 @@ describe('AnalysisHealthSummary', () => {
       <AnalysisHealthSummary
         now={NOW}
         tailorings={[
-          tailoring({ analyzedStatus: 'True' }),
-          tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound' }),
-          tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound' }),
+          tailoring({ analyzedCondition: 'True' }),
+          tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound' }),
+          tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound' }),
           tailoring(),
+          tailoring({ analyzedCondition: 'True', analyzedReason: 'FitProfileFallback' }),
         ]}
       />,
     );
     expect(html).toContain('1 analyzed');
     expect(html).toContain('2 failing');
     expect(html).toContain('TargetNotFound: 2');
+    expect(html).toContain('1 with warnings');
+    expect(html).toContain('FitProfileFallback: 1');
     expect(html).toContain('1 not analyzed yet');
   });
 

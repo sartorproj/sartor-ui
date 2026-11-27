@@ -4,13 +4,13 @@ import { Link } from 'react-router';
 import { Cpu, MemoryStick, Trophy } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { apiClient, EndpointUnavailableError, type TopGain } from '@/lib/api';
+import { apiClient, EndpointUnavailableError, type ContainerGain, type TopGainsReport } from '@/lib/api';
 import {
   clusterLabel,
   formatCores,
   formatGiB,
-  gainValue,
-  rankGains,
+  gainSaving,
+  gainsFor,
   tailoringPath,
   type GainResource,
   type QueryView,
@@ -31,11 +31,23 @@ export function TopGains() {
 }
 
 export interface TopGainsViewProps {
-  query: QueryView<TopGain[]>;
+  query: QueryView<TopGainsReport>;
   defaultResource?: GainResource;
 }
 
-const formatGain = (value: number, resource: GainResource) => (resource === 'cpu' ? formatCores(value) : formatGiB(value));
+const RESOURCE_LABEL: Record<GainResource, string> = { cpu: 'CPU', memory: 'memory' };
+
+function formatSaving(value: number | undefined, resource: GainResource): string {
+  if (value === undefined) return '-';
+  return resource === 'cpu' ? formatCores(value) : formatGiB(value);
+}
+
+function requestChange(gain: ContainerGain, resource: GainResource): string | undefined {
+  const current = gain.currentRequests?.[resource];
+  const recommended = gain.recommendedRequests?.[resource];
+  if (!current && !recommended) return undefined;
+  return `${current ?? '-'} → ${recommended ?? '-'}`;
+}
 
 export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewProps) {
   const [resource, setResource] = useState<GainResource>(defaultResource);
@@ -44,8 +56,8 @@ export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewPro
     return <UnavailableNote>{TOP_GAINS_UNAVAILABLE_NOTE}</UnavailableNote>;
   }
 
-  const gains = query.data ?? [];
-  const rows = rankGains(gains, resource, TOP_GAINS_LIMIT);
+  const report = query.data;
+  const rows = report ? gainsFor(report, resource, TOP_GAINS_LIMIT) : [];
   const other: GainResource = resource === 'cpu' ? 'memory' : 'cpu';
   const showCluster = rows.some((g) => g.cluster);
 
@@ -58,7 +70,7 @@ export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewPro
               <Trophy className="w-5 h-5" />
               Biggest gains
             </CardTitle>
-            <CardDescription>Containers whose recommendations free up the most requested {resource === 'cpu' ? 'CPU' : 'memory'}</CardDescription>
+            <CardDescription>Containers whose recommendations free up the most requested {RESOURCE_LABEL[resource]}, multiplied by replicas</CardDescription>
           </div>
           <div className="flex gap-1" role="group" aria-label="Rank by resource">
             <Button type="button" size="sm" variant={resource === 'cpu' ? 'secondary' : 'outline'} aria-pressed={resource === 'cpu'} onClick={() => setResource('cpu')}>
@@ -73,15 +85,15 @@ export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewPro
         </div>
       </CardHeader>
       <CardContent>
-        {query.isLoading && !query.data ? (
+        {query.isLoading && !report ? (
           <p className="py-6 text-center text-sm text-muted-foreground">Loading biggest gains…</p>
-        ) : query.error && !query.data ? (
+        ) : query.error && !report ? (
           <ErrorNote error={query.error} onRetry={query.refetch} what="biggest gains" />
         ) : rows.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            {gains.length === 0
+            {!report || report.tailorings.included === 0
               ? 'No gains to show yet. They appear once Tailorings have recommendations.'
-              : `No container has reclaimable ${resource === 'cpu' ? 'CPU' : 'memory'}.`}
+              : `No container has reclaimable ${RESOURCE_LABEL[resource]}.`}
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -91,17 +103,20 @@ export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewPro
                   <th className="py-2 px-3 text-left font-medium w-8">#</th>
                   <th className="py-2 px-3 text-left font-medium">Tailoring / container</th>
                   {showCluster && <th className="py-2 px-3 text-left font-medium">Cluster</th>}
-                  <th className="py-2 px-3 text-right font-medium">Reclaimable {resource === 'cpu' ? 'CPU' : 'memory'}</th>
-                  <th className="py-2 px-3 text-right font-medium">Reclaimable {other === 'cpu' ? 'CPU' : 'memory'}</th>
+                  <th className="py-2 px-3 text-right font-medium">Reclaimable {RESOURCE_LABEL[resource]}</th>
+                  <th className="py-2 px-3 text-right font-medium">Request per pod</th>
+                  <th className="py-2 px-3 text-right font-medium">{other === 'cpu' ? 'CPU' : 'Memory'} change</th>
                   <th className="py-2 px-3 text-right font-medium">Replicas</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((gain, index) => {
-                  const name = gain.tailoring ?? gain.targetName;
-                  const title = name ? `${gain.namespace}/${name}` : gain.namespace || '-';
+                  const title = gain.tailoring ? `${gain.namespace}/${gain.tailoring}` : gain.namespace || '-';
+                  const workload = gain.workloadKind && gain.workloadName
+                    ? `${gain.workloadKind} ${gain.workloadNamespace && gain.workloadNamespace !== gain.namespace ? `${gain.workloadNamespace}/` : ''}${gain.workloadName}`
+                    : undefined;
                   return (
-                    <tr key={`${gain.cluster}/${gain.namespace}/${name}/${gain.container}/${index}`} className="border-b border-border/50 hover:bg-muted/50">
+                    <tr key={`${gain.cluster}/${gain.namespace}/${gain.tailoring}/${gain.container}/${index}`} className="border-b border-border/50 hover:bg-muted/50">
                       <td className="py-2 px-3 text-muted-foreground">{index + 1}</td>
                       <td className="py-2 px-3">
                         {gain.tailoring && gain.namespace ? (
@@ -113,15 +128,16 @@ export function TopGainsView({ query, defaultResource = 'cpu' }: TopGainsViewPro
                         )}
                         <div className="text-xs text-muted-foreground">
                           {gain.container || '(unnamed container)'}
-                          {gain.targetKind && gain.targetName ? ` · ${gain.targetKind}/${gain.targetName}` : ''}
+                          {workload ? ` · ${workload}` : ''}
                         </div>
                       </td>
                       {showCluster && <td className="py-2 px-3">{clusterLabel(gain.cluster)}</td>}
                       <td className="py-2 px-3 text-right font-mono font-semibold text-emerald-700 dark:text-emerald-400">
-                        {formatGain(gainValue(gain, resource), resource)}
+                        {formatSaving(gainSaving(gain, resource), resource)}
                       </td>
-                      <td className="py-2 px-3 text-right font-mono text-muted-foreground">{formatGain(gainValue(gain, other), other)}</td>
-                      <td className="py-2 px-3 text-right font-mono">{gain.replicas ?? '-'}</td>
+                      <td className="py-2 px-3 text-right font-mono text-muted-foreground">{requestChange(gain, resource) ?? '-'}</td>
+                      <td className="py-2 px-3 text-right font-mono text-muted-foreground">{formatSaving(gainSaving(gain, other), other)}</td>
+                      <td className="py-2 px-3 text-right font-mono">{gain.replicas}</td>
                     </tr>
                   );
                 })}

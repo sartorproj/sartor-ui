@@ -4,6 +4,13 @@ import { Badge } from '@/components/ui/badge';
 import type { TailoringSummary } from '@/lib/api';
 import { analysisHealth, describeAnalysis, type AnalysisDescription } from '@/lib/analytics';
 
+const REASON_CLASSES: Record<AnalysisDescription['kind'], string> = {
+  failing: 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200',
+  warning: 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200',
+  pending: '',
+  analyzed: '',
+};
+
 const relative = (date: Date, now: Date) => formatDistance(date, now, { addSuffix: true });
 
 function nextAnalysisText(d: AnalysisDescription, now: Date): string | undefined {
@@ -29,13 +36,9 @@ export function AnalysisCell({ tailoring, now = new Date() }: { tailoring: Tailo
           variant="outline"
           title={d.message}
           tabIndex={d.message ? 0 : undefined}
-          className={
-            d.kind === 'failing'
-              ? 'cursor-help border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200'
-              : 'cursor-help'
-          }
+          className={`cursor-help ${REASON_CLASSES[d.kind]}`}
         >
-          {d.kind === 'failing' && <AlertTriangle className="w-3 h-3 mr-1" />}
+          {(d.kind === 'failing' || d.kind === 'warning') && <AlertTriangle className="w-3 h-3 mr-1" />}
           {d.reason}
           {d.message && <span className="sr-only">: {d.message}</span>}
         </Badge>
@@ -47,7 +50,7 @@ export function AnalysisCell({ tailoring, now = new Date() }: { tailoring: Tailo
   );
 }
 
-/** Counts of analyzed, failing (per reason) and not yet analyzed Tailorings. */
+/** Counts of analyzed, failing and warning (per reason), and not yet analyzed Tailorings. */
 export function AnalysisHealthSummary({ tailorings, now = new Date() }: { tailorings: TailoringSummary[]; now?: Date }) {
   if (tailorings.length === 0) return null;
   const health = analysisHealth(tailorings, now);
@@ -64,7 +67,18 @@ export function AnalysisHealthSummary({ tailorings, now = new Date() }: { tailor
         </Badge>
       )}
       {health.failingByReason.map(({ reason, count }) => (
-        <Badge key={reason} variant="outline" className="font-normal">
+        <Badge key={`failing-${reason}`} variant="outline" className="font-normal">
+          {reason}: {count}
+        </Badge>
+      ))}
+      {health.warning > 0 && (
+        <Badge variant="outline" className="bg-amber-50 text-amber-800 border-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-800">
+          <AlertTriangle className="w-3 h-3 mr-1" />
+          {health.warning} with warnings
+        </Badge>
+      )}
+      {health.warningByReason.map(({ reason, count }) => (
+        <Badge key={`warning-${reason}`} variant="outline" className="font-normal">
           {reason}: {count}
         </Badge>
       ))}

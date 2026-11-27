@@ -1,33 +1,37 @@
 import { describe, expect, test } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router';
-import { EndpointUnavailableError, normalizeSavings, type TopGain } from '@/lib/api';
+import { EndpointUnavailableError, normalizeSavings, normalizeTopGains, type SavingsReport, type TopGainsReport } from '@/lib/api';
 import type { QueryView } from '@/lib/analytics';
 import { SAVINGS_UNAVAILABLE_NOTE, SavingsSummaryView } from './SavingsSummary';
 import { TOP_GAINS_UNAVAILABLE_NOTE, TopGainsView } from './TopGains';
 import { OpenCostGate } from './OpenCostGate';
 
-const amounts = (cpu: number, mem: number, neededCpu = 0, neededMem = 0, included = 1, skipped = 0) => ({
-  reclaimableCpuCores: cpu,
-  reclaimableMemoryGiB: mem,
-  neededCpuCores: neededCpu,
-  neededMemoryGiB: neededMem,
-  included,
-  skipped,
+// Shapes as returned by the server's /api/v1/analytics endpoints.
+const amounts = (reclaimableCores: number, increaseCores: number, reclaimableGiB: number, increaseGiB: number) => ({
+  cpu: { reclaimableCores, increaseCores, netCores: reclaimableCores - increaseCores },
+  memory: { reclaimableGiB, increaseGiB, netGiB: reclaimableGiB - increaseGiB },
 });
+
+const counts = (included: number, skipped: Partial<Record<'skippedNoAnalysis' | 'skippedNoReplicas' | 'skippedNoCurrentRequest', number>> = {}) => {
+  const c = { skippedNoAnalysis: 0, skippedNoReplicas: 0, skippedNoCurrentRequest: 0, ...skipped };
+  return { total: included + c.skippedNoAnalysis + c.skippedNoReplicas + c.skippedNoCurrentRequest, included, ...c };
+};
 
 const savings = normalizeSavings({
-  clusters: [
-    {
-      cluster: 'example-cluster',
-      ...amounts(0.05, 120 / 1024, 0.25, 0.5, 3, 1),
-      namespaces: [{ namespace: 'example-namespace', ...amounts(0.05, 120 / 1024, 0.25, 0.5, 3, 1) }],
-    },
-    { cluster: '', ...amounts(-0.5, -0.25, 0, 0, 1, 0), namespaces: [{ namespace: '', ...amounts(-0.5, -0.25) }] },
+  totals: amounts(0.05, 0.75, 120 / 1024, 0.5),
+  byCluster: [
+    { cluster: '', tailorings: 1, ...amounts(0, 0.5, 0, 0.25) },
+    { cluster: 'example-cluster', tailorings: 3, ...amounts(0.05, 0.25, 120 / 1024, 0.25) },
   ],
+  byNamespace: [
+    { cluster: '', namespace: '', tailorings: 1, ...amounts(0, 0.5, 0, 0.25) },
+    { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 3, ...amounts(0.05, 0.25, 120 / 1024, 0.25) },
+  ],
+  tailorings: counts(4, { skippedNoAnalysis: 2, skippedNoCurrentRequest: 1 }),
 });
 
-const renderSavings = (query: QueryView<ReturnType<typeof normalizeSavings>>, defaultExpanded = false) =>
+const renderSavings = (query: QueryView<SavingsReport>, defaultExpanded = false) =>
   renderToStaticMarkup(<SavingsSummaryView query={query} defaultExpanded={defaultExpanded} />);
 
 describe('SavingsSummaryView', () => {
@@ -49,59 +53,87 @@ describe('SavingsSummaryView', () => {
     expect(renderSavings({ isLoading: true })).toContain('Loading savings');
   });
 
-  test('explains an empty result but keeps the counts', () => {
-    const html = renderSavings({ isLoading: false, data: normalizeSavings({ clusters: [], skipped: 4 }) });
+  test('explains an empty result but keeps the counts per skip reason', () => {
+    const html = renderSavings({
+      isLoading: false,
+      data: normalizeSavings({ byCluster: [], byNamespace: [], tailorings: counts(0, { skippedNoAnalysis: 3, skippedNoReplicas: 1 }) }),
+    });
     expect(html).toContain('No savings to show yet');
-    expect(html).toContain('4 skipped');
+    expect(html).toContain('0 of 4 Tailorings included');
+    expect(html).toContain('3 skipped: not analyzed yet');
+    expect(html).toContain('1 skipped: no replica count');
+    expect(html).not.toContain('no current request');
     expect(html).not.toContain('<table');
   });
 
-  test('renders totals and clusters with small, negative and unnamed values', () => {
+  test('renders totals and clusters with small, negative net and unnamed values', () => {
     const html = renderSavings({ isLoading: false, data: savings });
+    expect(html).toContain('4 of 7 Tailorings included');
+    expect(html).toContain('2 skipped: not analyzed yet');
+    expect(html).toContain('1 skipped: no current request');
     expect(html).toContain('example-cluster');
     expect(html).toContain('(default)');
-    expect(html).toContain('-0.45 cores');
-    expect(html).toContain('-136 MiB');
     expect(html).toContain('0.05 cores');
     expect(html).toContain('120 MiB');
-    expect(html).toContain('-0.5 cores');
-    expect(html).toContain('4 included');
-    expect(html).toContain('1 skipped');
+    expect(html).toContain('Net -0.7 cores');
+    expect(html).toContain('Net -392 MiB');
+    expect(html).toContain('-0.2 cores');
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain('example-namespace');
     expect(html).not.toContain('NaN');
-    expect(html).not.toContain('Est. cost');
+    expect(html).not.toContain('Net cost');
   });
 
-  test('expands clusters to namespaces', () => {
+  test('expands clusters to the namespaces from byNamespace', () => {
     const html = renderSavings({ isLoading: false, data: savings }, true);
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('example-namespace');
     expect(html).toContain('(no namespace)');
   });
 
-  test('shows cost only when the server returned it', () => {
+  test('shows hourly cost only when the server priced the request', () => {
+    const cost = { reclaimablePerHour: 0.5, increasePerHour: 0.125, netPerHour: 0.375 };
     const data = normalizeSavings({
-      clusters: [{ cluster: 'example-cluster', ...amounts(1, 1), cost: { currency: 'USD', period: 'month', reclaimable: 21.9, needed: 0 } }],
+      totals: { ...amounts(1, 0, 1, 0), cost },
+      byCluster: [{ cluster: 'example-cluster', tailorings: 1, ...amounts(1, 0, 1, 0), cost }],
+      byNamespace: [],
+      tailorings: counts(1),
+      pricing: { cpuPricePerCoreHour: 0.5 },
     });
     const html = renderSavings({ isLoading: false, data });
-    expect(html).toContain('Est. cost');
-    expect(html).toContain('$21.90/month');
+    expect(html).toContain('Net cost');
+    expect(html).toContain('0.38/h');
+    expect(html).toContain('0.5/h reclaimable');
   });
 });
 
-const gain = (overrides: Partial<TopGain>): TopGain => ({
+const gain = (container: string, cpuSavingCores?: number, memorySavingGiB?: number, overrides: Record<string, unknown> = {}) => ({
   cluster: '',
   namespace: 'example-namespace',
   tailoring: 'example-app',
-  container: 'app',
+  workloadKind: 'Deployment',
+  workloadName: 'example-app',
+  workloadNamespace: 'example-namespace',
+  container,
   replicas: 3,
-  reclaimableCpuCores: 0,
-  reclaimableMemoryGiB: 0,
+  currentRequests: { cpu: '1', memory: '1Gi' },
+  recommendedRequests: { cpu: '500m', memory: '1Gi' },
+  cpuSavingCores,
+  memorySavingGiB,
   ...overrides,
 });
 
-const renderGains = (query: QueryView<TopGain[]>, defaultResource: 'cpu' | 'memory' = 'cpu') =>
+const topGains = normalizeTopGains({
+  limit: 10,
+  byCPU: [
+    gain('app', 1.5, 0.0001),
+    gain('worker', 0.25, -0.5, { tailoring: 'example-worker', workloadNamespace: 'example-workloads', workloadName: 'example-worker' }),
+  ],
+  byMemory: [gain('cache', undefined, 4, { tailoring: 'example-cache', currentRequests: { memory: '2Gi' }, recommendedRequests: { memory: '640Mi' } })],
+  tailorings: counts(3),
+});
+
+const renderGains = (query: QueryView<TopGainsReport>, defaultResource: 'cpu' | 'memory' = 'cpu') =>
   renderToStaticMarkup(
     <MemoryRouter>
       <TopGainsView query={query} defaultResource={defaultResource} />
@@ -109,43 +141,44 @@ const renderGains = (query: QueryView<TopGain[]>, defaultResource: 'cpu' | 'memo
   );
 
 describe('TopGainsView', () => {
-  const gains = [
-    gain({ container: 'app', reclaimableCpuCores: 1.5, reclaimableMemoryGiB: 0.0001 }),
-    gain({ container: 'cache', tailoring: 'example-cache', reclaimableCpuCores: 0, reclaimableMemoryGiB: 4 }),
-    gain({ container: 'orphan', tailoring: undefined, targetName: 'example-job', reclaimableCpuCores: 0.25 }),
-  ];
-
-  test('ranks by CPU, links to the Tailoring and hides entries without CPU gains', () => {
-    const html = renderGains({ isLoading: false, data: gains });
+  test('lists byCPU, linking to the Tailoring by namespace and name', () => {
+    const html = renderGains({ isLoading: false, data: topGains });
     expect(html).toContain('href="/tailorings/example-namespace/example-app"');
+    expect(html).toContain('href="/tailorings/example-namespace/example-worker"');
     expect(html).toContain('1.5 cores');
+    expect(html).toContain('1 → 500m');
     expect(html).toContain('&lt; 1 MiB');
-    expect(html).toContain('example-namespace/example-job');
-    expect(html).not.toContain('href="/tailorings/example-namespace/example-job"');
+    expect(html).toContain('-512 MiB');
+    expect(html).toContain('Deployment example-workloads/example-worker');
     expect(html).not.toContain('example-cache');
     expect(html).toContain('aria-pressed="true"');
-    expect(html.indexOf('>app<')).toBeLessThan(html.indexOf('>orphan<'));
+    expect(html.indexOf('example-app"')).toBeLessThan(html.indexOf('example-worker"'));
   });
 
-  test('ranks by memory', () => {
-    const html = renderGains({ isLoading: false, data: gains }, 'memory');
+  test('lists byMemory', () => {
+    const html = renderGains({ isLoading: false, data: topGains }, 'memory');
     expect(html).toContain('href="/tailorings/example-namespace/example-cache"');
     expect(html).toContain('4 GiB');
+    expect(html).toContain('2Gi → 640Mi');
     expect(html).toContain('Reclaimable memory');
+    expect(html).not.toContain('example-worker');
   });
 
   test('explains an empty result', () => {
-    expect(renderGains({ isLoading: false, data: [] })).toContain('No gains to show yet');
+    expect(renderGains({ isLoading: false, data: normalizeTopGains({ byCPU: [], byMemory: [], tailorings: counts(0) }) })).toContain(
+      'No gains to show yet',
+    );
   });
 
   test('explains when nothing is reclaimable for the chosen resource', () => {
-    const html = renderGains({ isLoading: false, data: [gain({ reclaimableCpuCores: -1, reclaimableMemoryGiB: 2 })] });
-    expect(html).toContain('No container has reclaimable CPU');
+    const data = normalizeTopGains({ byCPU: [], byMemory: [gain('app', undefined, 2)], tailorings: counts(1) });
+    expect(renderGains({ isLoading: false, data })).toContain('No container has reclaimable CPU');
   });
 
   test('shows the cluster column only when a cluster is named', () => {
-    expect(renderGains({ isLoading: false, data: gains })).not.toContain('>Cluster<');
-    expect(renderGains({ isLoading: false, data: [gain({ cluster: 'example-cluster', reclaimableCpuCores: 1 })] })).toContain('example-cluster');
+    expect(renderGains({ isLoading: false, data: topGains })).not.toContain('>Cluster<');
+    const data = normalizeTopGains({ byCPU: [gain('app', 1, 0, { cluster: 'example-cluster' })], tailorings: counts(1) });
+    expect(renderGains({ isLoading: false, data })).toContain('example-cluster');
   });
 
   test('shows a short note on an older server and the message on errors', () => {

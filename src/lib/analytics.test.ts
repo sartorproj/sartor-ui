@@ -4,15 +4,18 @@ import {
   clusterLabel,
   describeAnalysis,
   formatCores,
-  formatCost,
+  formatCostPerHour,
   formatGiB,
+  gainsFor,
+  groupSavingsByCluster,
   isOpenCostReady,
   openCostProblem,
-  rankGains,
+  skippedBreakdown,
+  skippedCount,
   tailoringPath,
   UNNAMED_CLUSTER_LABEL,
 } from './analytics';
-import type { TailoringSummary, TopGain } from './api';
+import { normalizeSavings, normalizeTopGains, type ContainerGain, type TailoringSummary } from './api';
 
 describe('formatCores', () => {
   test.each([
@@ -57,14 +60,11 @@ describe('formatGiB', () => {
   });
 });
 
-describe('formatCost', () => {
-  test('formats a currency with an optional period', () => {
-    expect(formatCost(12.345, 'USD')).toBe('$12.35');
-    expect(formatCost(-3, 'EUR', 'month')).toBe('-€3.00/month');
-  });
-
-  test('falls back for an invalid currency code', () => {
-    expect(formatCost(5, 'not-a-currency')).toBe('5 not-a-currency');
+describe('formatCostPerHour', () => {
+  test('formats an hourly amount without assuming a currency', () => {
+    expect(formatCostPerHour(12.345)).toBe('12.35/h');
+    expect(formatCostPerHour(-3)).toBe('-3/h');
+    expect(formatCostPerHour(NaN)).toBe('0/h');
   });
 });
 
@@ -82,29 +82,90 @@ describe('tailoringPath', () => {
   });
 });
 
-const gain = (container: string, cpu: number, mem: number): TopGain => ({
-  cluster: '',
+const amounts = (reclaimableCores: number, increaseCores: number, reclaimableGiB: number, increaseGiB: number) => ({
+  cpu: { reclaimableCores, increaseCores, netCores: reclaimableCores - increaseCores },
+  memory: { reclaimableGiB, increaseGiB, netGiB: reclaimableGiB - increaseGiB },
+});
+
+describe('groupSavingsByCluster', () => {
+  test('nests the flat byNamespace list under its cluster, largest reclaimable CPU first', () => {
+    const clusters = groupSavingsByCluster(
+      normalizeSavings({
+        byCluster: [
+          { cluster: '', tailorings: 1, ...amounts(0, 0.5, 0, 0) },
+          { cluster: 'example-cluster', tailorings: 3, ...amounts(2, 0, 1, 0) },
+        ],
+        byNamespace: [
+          { cluster: '', namespace: 'example-namespace', tailorings: 1, ...amounts(0, 0.5, 0, 0) },
+          { cluster: 'example-cluster', namespace: 'example-a', tailorings: 1, ...amounts(0.5, 0, 1, 0) },
+          { cluster: 'example-cluster', namespace: 'example-b', tailorings: 2, ...amounts(1.5, 0, 0, 0) },
+        ],
+      }),
+    );
+    expect(clusters.map((c) => [c.cluster, c.tailorings, c.namespaces.map((n) => n.namespace)])).toEqual([
+      ['', 1, ['example-namespace']],
+      ['example-cluster', 3, ['example-b', 'example-a']],
+    ]);
+    expect(clusters[1].cpu.reclaimableCores).toBe(2);
+    expect(clusters[1].namespace).toBeUndefined();
+  });
+
+  test('sums namespaces whose cluster is missing from byCluster', () => {
+    const [cluster] = groupSavingsByCluster(
+      normalizeSavings({
+        byNamespace: [
+          { cluster: 'example-cluster', namespace: 'example-a', tailorings: 1, ...amounts(0.5, 0, 1, 0.25), cost: { reclaimablePerHour: 1, increasePerHour: 0, netPerHour: 1 } },
+          { cluster: 'example-cluster', namespace: 'example-b', tailorings: 2, ...amounts(1, 0.25, 0, 0) },
+        ],
+      }),
+    );
+    expect(cluster.tailorings).toBe(3);
+    expect(cluster.cpu).toEqual({ reclaimableCores: 1.5, increaseCores: 0.25, netCores: 1.25 });
+    expect(cluster.memory).toEqual({ reclaimableGiB: 1, increaseGiB: 0.25, netGiB: 0.75 });
+    expect(cluster.cost).toEqual({ reclaimablePerHour: 1, increasePerHour: 0, netPerHour: 1 });
+  });
+
+  test('handles an empty report and clusters without namespaces', () => {
+    expect(groupSavingsByCluster(normalizeSavings({}))).toEqual([]);
+    const [cluster] = groupSavingsByCluster(normalizeSavings({ byCluster: [{ cluster: 'example-cluster', tailorings: 1 }] }));
+    expect(cluster.namespaces).toEqual([]);
+  });
+});
+
+describe('skippedBreakdown', () => {
+  test('lists the reasons with skipped Tailorings', () => {
+    const counts = { total: 9, included: 3, skippedNoAnalysis: 4, skippedNoReplicas: 0, skippedNoCurrentRequest: 2 };
+    expect(skippedBreakdown(counts)).toEqual([
+      { key: 'skippedNoAnalysis', label: 'not analyzed yet', count: 4 },
+      { key: 'skippedNoCurrentRequest', label: 'no current request', count: 2 },
+    ]);
+    expect(skippedCount(counts)).toBe(6);
+  });
+});
+
+const gain = (container: string, cpuSavingCores?: number, memorySavingGiB?: number): Partial<ContainerGain> => ({
   namespace: 'example-namespace',
   tailoring: 'example-app',
   container,
-  reclaimableCpuCores: cpu,
-  reclaimableMemoryGiB: mem,
+  replicas: 2,
+  cpuSavingCores,
+  memorySavingGiB,
 });
 
-describe('rankGains', () => {
-  const gains = [gain('a', 0.5, 4), gain('b', 2, 0), gain('c', -1, 1), gain('d', 0, 0.01)];
-
-  test('ranks by CPU and drops entries with nothing reclaimable', () => {
-    expect(rankGains(gains, 'cpu').map((g) => g.container)).toEqual(['b', 'a']);
+describe('gainsFor', () => {
+  const report = normalizeTopGains({
+    byCPU: [gain('a', 0.5), gain('b', 2), gain('c', -1), gain('d')],
+    byMemory: [gain('a', 0.5, 4), gain('e', undefined, 0.01), gain('f', 1, 0)],
   });
 
-  test('ranks by memory', () => {
-    expect(rankGains(gains, 'memory').map((g) => g.container)).toEqual(['a', 'c', 'd']);
+  test('uses the ranking for the resource and drops entries with nothing reclaimable', () => {
+    expect(gainsFor(report, 'cpu').map((g) => g.container)).toEqual(['b', 'a']);
+    expect(gainsFor(report, 'memory').map((g) => g.container)).toEqual(['a', 'e']);
   });
 
   test('applies the limit and handles no gains', () => {
-    expect(rankGains(gains, 'memory', 1).map((g) => g.container)).toEqual(['a']);
-    expect(rankGains([], 'cpu')).toEqual([]);
+    expect(gainsFor(report, 'memory', 1).map((g) => g.container)).toEqual(['a']);
+    expect(gainsFor(normalizeTopGains({}), 'cpu')).toEqual([]);
   });
 });
 
@@ -143,15 +204,33 @@ describe('describeAnalysis', () => {
 
   test('a false Analyzed condition is failing, even after an earlier analysis', () => {
     const d = describeAnalysis(
-      tailoring({ lastAnalysis: '2026-01-01T11:00:00Z', analyzedStatus: 'False', analyzedReason: 'PrometheusError' }),
+      tailoring({ lastAnalysis: '2026-01-01T11:00:00Z', analyzedCondition: 'False', analyzedReason: 'PrometheusError' }),
       NOW,
     );
     expect(d.kind).toBe('failing');
     expect(d.reason).toBe('PrometheusError');
   });
 
+  test('FitProfileFallback on a true Analyzed condition is a warning, not a failure', () => {
+    const d = describeAnalysis(
+      tailoring({
+        lastAnalysis: '2026-01-01T11:00:00Z',
+        analyzedCondition: 'True',
+        analyzedReason: 'FitProfileFallback',
+        analyzedMessage: 'Resource analysis completed with a fallback: unknown strategy',
+      }),
+      NOW,
+    );
+    expect(d.kind).toBe('warning');
+    expect(d.reason).toBe('FitProfileFallback');
+  });
+
+  test('an Unknown Analyzed condition without an analysis is pending', () => {
+    expect(describeAnalysis(tailoring({ analyzedCondition: 'Unknown', analyzedReason: 'Reconciling' }), NOW).kind).toBe('pending');
+  });
+
   test('a failing Tailoring without a reason reports Unknown', () => {
-    expect(describeAnalysis(tailoring({ analyzedStatus: 'False' }), NOW).reason).toBe('Unknown');
+    expect(describeAnalysis(tailoring({ analyzedCondition: 'False' }), NOW).reason).toBe('Unknown');
   });
 
   test.each([
@@ -159,7 +238,7 @@ describe('describeAnalysis', () => {
     ['2026-01-01T11:55:00Z', true],
     ['2026-01-01T12:00:00Z', true],
   ])('next analysis at %s is overdue: %p', (time, overdue) => {
-    const d = describeAnalysis(tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound', nextAnalysisTime: time }), NOW);
+    const d = describeAnalysis(tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound', nextAnalysisTime: time }), NOW);
     expect(d.nextAnalysis).toEqual({ at: new Date(time), overdue });
   });
 
@@ -173,19 +252,22 @@ describe('analysisHealth', () => {
     const health = analysisHealth(
       [
         tailoring({ lastAnalysis: '2026-01-01T11:00:00Z' }),
-        tailoring({ analyzedStatus: 'True' }),
+        tailoring({ analyzedCondition: 'True' }),
         tailoring(),
-        tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound' }),
-        tailoring({ analyzedStatus: 'False', analyzedReason: 'TargetNotFound' }),
-        tailoring({ analyzedStatus: 'False', analyzedReason: 'PrometheusError' }),
-        tailoring({ analyzedStatus: 'False' }),
+        tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound' }),
+        tailoring({ analyzedCondition: 'False', analyzedReason: 'TargetNotFound' }),
+        tailoring({ analyzedCondition: 'False', analyzedReason: 'PrometheusError' }),
+        tailoring({ analyzedCondition: 'False' }),
+        tailoring({ analyzedCondition: 'True', analyzedReason: 'FitProfileFallback' }),
       ],
       NOW,
     );
     expect(health).toEqual({
       analyzed: 2,
+      warning: 1,
       pending: 1,
       failing: 4,
+      warningByReason: [{ reason: 'FitProfileFallback', count: 1 }],
       failingByReason: [
         { reason: 'TargetNotFound', count: 2 },
         { reason: 'PrometheusError', count: 1 },
@@ -195,7 +277,7 @@ describe('analysisHealth', () => {
   });
 
   test('handles no Tailorings', () => {
-    expect(analysisHealth([], NOW)).toEqual({ analyzed: 0, pending: 0, failing: 0, failingByReason: [] });
+    expect(analysisHealth([], NOW)).toEqual({ analyzed: 0, warning: 0, pending: 0, failing: 0, warningByReason: [], failingByReason: [] });
   });
 });
 

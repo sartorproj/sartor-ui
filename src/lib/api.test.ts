@@ -349,48 +349,62 @@ describe('forecastError', () => {
   });
 });
 
-const amounts = (cpu: number, mem: number, neededCpu = 0, neededMem = 0, included = 1, skipped = 0) => ({
-  reclaimableCpuCores: cpu,
-  reclaimableMemoryGiB: mem,
-  neededCpuCores: neededCpu,
-  neededMemoryGiB: neededMem,
-  included,
-  skipped,
+// Shapes as returned by the server's /api/v1/analytics endpoints.
+const amounts = (reclaimableCores: number, increaseCores: number, reclaimableGiB: number, increaseGiB: number) => ({
+  cpu: { reclaimableCores, increaseCores, netCores: reclaimableCores - increaseCores },
+  memory: { reclaimableGiB, increaseGiB, netGiB: reclaimableGiB - increaseGiB },
 });
 
+const counts = {
+  total: 7,
+  included: 4,
+  skippedNoAnalysis: 1,
+  skippedNoReplicas: 1,
+  skippedNoCurrentRequest: 1,
+};
+
+const savingsReport = {
+  totals: amounts(1.5, 0.25, 2, 0.5),
+  byCluster: [
+    { cluster: '', tailorings: 1, ...amounts(0, 0.25, 0, 0.5) },
+    { cluster: 'example-cluster', tailorings: 3, ...amounts(1.5, 0, 2, 0) },
+  ],
+  byNamespace: [
+    { cluster: '', namespace: 'example-namespace', tailorings: 1, ...amounts(0, 0.25, 0, 0.5) },
+    { cluster: 'example-cluster', namespace: 'example-namespace', tailorings: 2, ...amounts(1.45, 0, 1.8828125, 0) },
+    { cluster: 'example-cluster', namespace: 'example-small', tailorings: 1, ...amounts(0.05, 0, 0.1171875, 0) },
+  ],
+  tailorings: counts,
+};
+
 describe('apiClient.getSavingsSummary', () => {
-  test('requests the savings endpoint and normalizes the response', async () => {
+  test('requests the savings endpoint and keeps the server shape', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: savingsReport });
+    const report = await apiClient.getSavingsSummary();
+    expect(lastPath).toBe('/api/v1/analytics/savings');
+    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
+    expect(report).toEqual(savingsReport);
+  });
+
+  test('sends the price parameters the server reads, only when valid', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: savingsReport });
+    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03, memPricePerGiBHour: 0.004 });
+    expect(lastQuery?.get('cpuPricePerCoreHour')).toBe('0.03');
+    expect(lastQuery?.get('memPricePerGiBHour')).toBe('0.004');
+    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: -1, memPricePerGiBHour: NaN });
+    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
+  });
+
+  test('keeps cost and pricing when the server priced the request', async () => {
+    const cost = { reclaimablePerHour: 0.05, increasePerHour: 0.01, netPerHour: 0.04 };
     analyticsResponse = () =>
       Response.json({
         success: true,
-        data: {
-          clusters: [
-            {
-              cluster: 'example-cluster',
-              ...amounts(1.5, 2, 0.25, 0.5, 3, 1),
-              namespaces: [
-                { namespace: 'example-small', ...amounts(0.05, 0.1171875) },
-                { namespace: 'example-namespace', ...amounts(1.45, 1.8828125, 0.25, 0.5, 2, 1) },
-              ],
-            },
-          ],
-          totals: amounts(1.5, 2, 0.25, 0.5, 3, 1),
-        },
+        data: { ...savingsReport, totals: { ...savingsReport.totals, cost }, pricing: { cpuPricePerCoreHour: 0.03 } },
       });
-    const summary = await apiClient.getSavingsSummary();
-    expect(lastPath).toBe('/api/v1/analytics/savings');
-    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
-    expect(summary.totals).toEqual(amounts(1.5, 2, 0.25, 0.5, 3, 1));
-    expect(summary.clusters[0].cluster).toBe('example-cluster');
-    expect(summary.clusters[0].namespaces.map((n) => n.namespace)).toEqual(['example-namespace', 'example-small']);
-  });
-
-  test('passes price parameters only when they are set', async () => {
-    analyticsResponse = () => Response.json({ success: true, data: { clusters: [] } });
-    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03, memoryPricePerGiBHour: NaN, currency: 'EUR' });
-    expect(lastQuery?.get('cpuPricePerCoreHour')).toBe('0.03');
-    expect(lastQuery?.has('memoryPricePerGiBHour')).toBe(false);
-    expect(lastQuery?.get('currency')).toBe('EUR');
+    const report = await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03 });
+    expect(report.totals.cost).toEqual(cost);
+    expect(report.pricing).toEqual({ cpuPricePerCoreHour: 0.03, memPricePerGiBHour: undefined });
   });
 
   test('a plain 404 from a server without the endpoint is EndpointUnavailableError', async () => {
@@ -408,6 +422,7 @@ describe('apiClient.getSavingsSummary', () => {
 
   test.each([
     ['a JSON error', () => Response.json({ success: false, error: 'listing Tailorings failed' }, { status: 500 }), 'listing Tailorings failed'],
+    ['an invalid price', () => Response.json({ success: false, error: 'invalid cpuPricePerCoreHour "x"' }, { status: 400 }), 'invalid cpuPricePerCoreHour "x"'],
     ['an empty body', () => new Response('', { status: 500 }), 'Savings request failed with status 500'],
     ['success: false with status 200', () => Response.json({ success: false, error: 'boom' }), 'boom'],
   ])('rejects with the server message for %s', async (_, response, message) => {
@@ -420,82 +435,95 @@ describe('apiClient.getSavingsSummary', () => {
   test.each([
     ['no data', { success: true }],
     ['null data', { success: true, data: null }],
-    ['empty clusters', { success: true, data: { clusters: [] } }],
-    ['clusters that are not a list', { success: true, data: { clusters: 'nope' } }],
-  ])('returns an empty summary for %s', async (_, body) => {
+    ['an empty report', { success: true, data: { totals: amounts(0, 0, 0, 0), byCluster: [], byNamespace: [], tailorings: { total: 0 } } }],
+    ['lists that are not lists', { success: true, data: { byCluster: 'nope', byNamespace: {} } }],
+  ])('returns an empty report for %s', async (_, body) => {
     analyticsResponse = () => Response.json(body);
-    const summary = await apiClient.getSavingsSummary();
-    expect(summary.clusters).toEqual([]);
-    expect(summary.totals).toEqual(amounts(0, 0, 0, 0, 0, 0));
+    const report = await apiClient.getSavingsSummary();
+    expect(report.byCluster).toEqual([]);
+    expect(report.byNamespace).toEqual([]);
+    expect(report.totals).toEqual(amounts(0, 0, 0, 0));
+    expect(report.tailorings).toEqual({ total: 0, included: 0, skippedNoAnalysis: 0, skippedNoReplicas: 0, skippedNoCurrentRequest: 0 });
   });
 });
 
 describe('normalizeSavings', () => {
-  test('sums the clusters when there are no totals, keeping negatives and empty names', () => {
-    const summary = normalizeSavings({
-      clusters: [
-        { cluster: '', ...amounts(-0.5, 1, 0, 0, 1, 2), cost: { currency: 'EUR', reclaimable: -3, needed: 0 } },
-        { cluster: 'example-cluster', ...amounts(2, 'x' as unknown as number, Infinity, 0.25, 4, 0) },
-      ],
+  test('coerces malformed numbers and keeps negatives', () => {
+    const report = normalizeSavings({
+      totals: { cpu: { reclaimableCores: '0.5', increaseCores: 'x', netCores: -0.25 }, memory: { netGiB: Infinity } },
+      byCluster: [{ cluster: 42, tailorings: -3 }, null],
+      tailorings: { total: '2', included: 1.6 },
     });
-    expect(summary.clusters.map((c) => c.cluster)).toEqual(['', 'example-cluster']);
-    expect(summary.clusters[1].reclaimableMemoryGiB).toBe(0);
-    expect(summary.clusters[1].neededCpuCores).toBe(0);
-    expect(summary.totals).toEqual({ ...amounts(1.5, 1, 0, 0.25, 5, 2), cost: { currency: 'EUR', period: undefined, reclaimable: -3, needed: 0 } });
+    expect(report.totals).toEqual({
+      cpu: { reclaimableCores: 0.5, increaseCores: 0, netCores: -0.25 },
+      memory: { reclaimableGiB: 0, increaseGiB: 0, netGiB: 0 },
+    });
+    expect(report.byCluster.map((g) => [g.cluster, g.tailorings])).toEqual([['', 0], ['', 0]]);
+    expect(report.byCluster[0].namespace).toBeUndefined();
+    expect(report.tailorings.total).toBe(2);
+    expect(report.tailorings.included).toBe(2);
   });
 
-  test('top-level counts override the totals', () => {
-    const summary = normalizeSavings({ clusters: [], totals: amounts(0, 0), included: 0, skipped: 7 });
-    expect(summary.totals.included).toBe(0);
-    expect(summary.totals.skipped).toBe(7);
-  });
-
-  test('defaults the cost currency and coerces numeric strings', () => {
-    const summary = normalizeSavings({ clusters: [], totals: { reclaimableCpuCores: '0.5', cost: { reclaimable: '12.5' } } });
-    expect(summary.totals.reclaimableCpuCores).toBe(0.5);
-    expect(summary.totals.cost).toEqual({ currency: 'USD', period: undefined, reclaimable: 12.5, needed: 0 });
+  test('marks byNamespace entries without a namespace with an empty one', () => {
+    const report = normalizeSavings({ byNamespace: [{ cluster: 'example-cluster', namespace: '', tailorings: 1 }] });
+    expect(report.byNamespace[0].namespace).toBe('');
   });
 });
 
 describe('apiClient.getTopGains', () => {
-  const gain = (container: string, cpu: number, mem: number) => ({
+  const gain = (container: string, cpuSavingCores?: number, memorySavingGiB?: number) => ({
     cluster: 'example-cluster',
     namespace: 'example-namespace',
     tailoring: 'example-app',
+    workloadKind: 'Deployment',
+    workloadName: 'example-app',
+    workloadNamespace: 'example-namespace',
     container,
     replicas: 3,
-    reclaimableCpuCores: cpu,
-    reclaimableMemoryGiB: mem,
+    currentRequests: { cpu: '500m', memory: '512Mi' },
+    recommendedRequests: { cpu: '200m', memory: '256Mi' },
+    ...(cpuSavingCores === undefined ? {} : { cpuSavingCores }),
+    ...(memorySavingGiB === undefined ? {} : { memorySavingGiB }),
   });
+  const topGains = { limit: 5, byCPU: [gain('app', 0.9, 0.75)], byMemory: [gain('app', 0.9, 0.75), gain('cache', undefined, 2)], tailorings: counts };
 
-  test('sends the limit and returns the list', async () => {
-    analyticsResponse = () => Response.json({ success: true, data: [gain('app', 1, 2)] });
-    const gains = await apiClient.getTopGains(5);
+  test('sends the limit and keeps the server shape', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: topGains });
+    const report = await apiClient.getTopGains(5);
     expect(lastPath).toBe('/api/v1/analytics/top-gains');
     expect(lastQuery?.get('limit')).toBe('5');
-    expect(gains).toEqual([{ ...gain('app', 1, 2), targetKind: undefined, targetName: undefined }]);
+    expect(report.limit).toBe(5);
+    expect(report.tailorings).toEqual(counts);
+    expect(report.byCPU).toEqual([gain('app', 0.9, 0.75)]);
+    expect(report.byMemory[1].cpuSavingCores).toBeUndefined();
+    expect(report.byMemory[1].memorySavingGiB).toBe(2);
   });
 
   test.each([
     [0, '1'],
     [2.7, '2'],
+    [1000, '200'],
     [NaN, '10'],
-  ])('sanitizes limit %p to %s', async (limit, sent) => {
-    analyticsResponse = () => Response.json({ success: true, data: [] });
+  ])('keeps limit %p within what the server accepts (%s)', async (limit, sent) => {
+    analyticsResponse = () => Response.json({ success: true, data: topGains });
     await apiClient.getTopGains(limit);
     expect(lastQuery?.get('limit')).toBe(sent);
-  });
-
-  test('merges separate cpu and memory rankings without duplicates', () => {
-    const gains = normalizeTopGains({ cpu: [gain('app', 1, 0), gain('sidecar', 0.5, 0)], memory: [gain('app', 1, 0), gain('cache', 0, 4)] });
-    expect(gains.map((g) => g.container)).toEqual(['app', 'sidecar', 'cache']);
   });
 
   test.each([
     ['null', null],
     ['an object without lists', { foo: 1 }],
+    ['lists that are not lists', { byCPU: 'x', byMemory: null }],
   ])('returns no gains for %s', (_, raw) => {
-    expect(normalizeTopGains(raw)).toEqual([]);
+    const report = normalizeTopGains(raw);
+    expect(report.byCPU).toEqual([]);
+    expect(report.byMemory).toEqual([]);
+  });
+
+  test('drops non-numeric savings and empty request values', () => {
+    const [g] = normalizeTopGains({ byCPU: [{ ...gain('app'), cpuSavingCores: 'lots', currentRequests: { cpu: '' } }] }).byCPU;
+    expect(g.cpuSavingCores).toBeUndefined();
+    expect(g.currentRequests).toEqual({ cpu: undefined, memory: undefined });
   });
 
   test('a plain 404 is EndpointUnavailableError', async () => {
@@ -517,11 +545,11 @@ describe('tailoringAnalysisState', () => {
     readyCondition: 'False',
   };
 
-  test('reads the flat fields', () => {
+  test('reads the Analyzed condition fields', () => {
     expect(
       tailoringAnalysisState({
         ...summary,
-        analyzedStatus: 'False',
+        analyzedCondition: 'False',
         analyzedReason: 'TargetNotFound',
         analyzedMessage: 'Deployment example-namespace/example-app not found',
         nextAnalysisTime: '2026-01-01T00:05:00Z',
@@ -536,12 +564,6 @@ describe('tailoringAnalysisState', () => {
     });
   });
 
-  test('falls back to a nested condition', () => {
-    const state = tailoringAnalysisState({ ...summary, analyzedCondition: { status: 'False', reason: 'PrometheusError', message: 'timeout' } });
-    expect(state.reason).toBe('PrometheusError');
-    expect(state.status).toBe('False');
-  });
-
   test('handles a summary from an older server', () => {
     expect(tailoringAnalysisState(summary)).toEqual({
       status: undefined,
@@ -552,8 +574,9 @@ describe('tailoringAnalysisState', () => {
     });
   });
 
-  test('ignores unparseable times and bogus counts', () => {
-    const state = tailoringAnalysisState({ ...summary, nextAnalysisTime: 'soon', consecutiveFailures: -2, analyzedReason: '  ' });
+  test('ignores unparseable times, bogus counts and blank strings', () => {
+    const state = tailoringAnalysisState({ ...summary, analyzedCondition: ' ', nextAnalysisTime: 'soon', consecutiveFailures: -2, analyzedReason: '  ' });
+    expect(state.status).toBeUndefined();
     expect(state.nextAnalysisTime).toBeUndefined();
     expect(state.consecutiveFailures).toBe(0);
     expect(state.reason).toBeUndefined();
