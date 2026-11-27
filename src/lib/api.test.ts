@@ -5,6 +5,8 @@ let lastQuery: URLSearchParams | undefined;
 let lastPath: string | undefined;
 // Response for /api/v1/prometheus/forecast; every other path answers like the metrics endpoint.
 let forecastResponse: () => Response = () => Response.json({ success: true, data: {} });
+// Response for /api/v1/analytics/*.
+let analyticsResponse: () => Response = () => Response.json({ success: true, data: {} });
 const server = Bun.serve({
   port: 0,
   fetch(req) {
@@ -12,6 +14,7 @@ const server = Bun.serve({
     lastQuery = url.searchParams;
     lastPath = url.pathname;
     if (url.pathname === '/api/v1/prometheus/forecast') return forecastResponse();
+    if (url.pathname.startsWith('/api/v1/analytics/')) return analyticsResponse();
     return Response.json({ success: true, data: [{ timestamp: 1, value: 2 }] });
   },
 });
@@ -21,8 +24,21 @@ afterAll(() => {
 
 // The API base URL is read when the module loads, so import it after the stub server is up.
 process.env.VITE_API_URL = server.url.origin;
-const { apiClient, ForecastUnavailableError, forecastError, forecastParams, prometheusMetricsParams, tailoringMetricsTarget } =
-  await import('./api');
+const {
+  default: axiosInstance,
+  apiClient,
+  EndpointUnavailableError,
+  ForecastUnavailableError,
+  forecastError,
+  forecastParams,
+  normalizeSavings,
+  normalizeTopGains,
+  prometheusMetricsParams,
+  tailoringAnalysisState,
+  tailoringMetricsTarget,
+} = await import('./api');
+// Another test file may have loaded the module first, with the default base URL.
+axiosInstance.defaults.baseURL = server.url.origin;
 type Tailoring = import('./api').Tailoring;
 
 const tailoring = (target: Tailoring['spec']['target'], namespace = 'example-system'): Tailoring => ({
@@ -330,5 +346,216 @@ describe('forecastError', () => {
     const err = new Error('boom');
     expect(forecastError(err)).toBe(err);
     expect(forecastError('boom').message).toBe('boom');
+  });
+});
+
+const amounts = (cpu: number, mem: number, neededCpu = 0, neededMem = 0, included = 1, skipped = 0) => ({
+  reclaimableCpuCores: cpu,
+  reclaimableMemoryGiB: mem,
+  neededCpuCores: neededCpu,
+  neededMemoryGiB: neededMem,
+  included,
+  skipped,
+});
+
+describe('apiClient.getSavingsSummary', () => {
+  test('requests the savings endpoint and normalizes the response', async () => {
+    analyticsResponse = () =>
+      Response.json({
+        success: true,
+        data: {
+          clusters: [
+            {
+              cluster: 'example-cluster',
+              ...amounts(1.5, 2, 0.25, 0.5, 3, 1),
+              namespaces: [
+                { namespace: 'example-small', ...amounts(0.05, 0.1171875) },
+                { namespace: 'example-namespace', ...amounts(1.45, 1.8828125, 0.25, 0.5, 2, 1) },
+              ],
+            },
+          ],
+          totals: amounts(1.5, 2, 0.25, 0.5, 3, 1),
+        },
+      });
+    const summary = await apiClient.getSavingsSummary();
+    expect(lastPath).toBe('/api/v1/analytics/savings');
+    expect([...(lastQuery?.keys() ?? [])]).toEqual([]);
+    expect(summary.totals).toEqual(amounts(1.5, 2, 0.25, 0.5, 3, 1));
+    expect(summary.clusters[0].cluster).toBe('example-cluster');
+    expect(summary.clusters[0].namespaces.map((n) => n.namespace)).toEqual(['example-namespace', 'example-small']);
+  });
+
+  test('passes price parameters only when they are set', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: { clusters: [] } });
+    await apiClient.getSavingsSummary({ cpuPricePerCoreHour: 0.03, memoryPricePerGiBHour: NaN, currency: 'EUR' });
+    expect(lastQuery?.get('cpuPricePerCoreHour')).toBe('0.03');
+    expect(lastQuery?.has('memoryPricePerGiBHour')).toBe(false);
+    expect(lastQuery?.get('currency')).toBe('EUR');
+  });
+
+  test('a plain 404 from a server without the endpoint is EndpointUnavailableError', async () => {
+    analyticsResponse = () => new Response('404 page not found\n', { status: 404 });
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).toBeInstanceOf(EndpointUnavailableError);
+  });
+
+  test('a 404 with a JSON error is a regular error', async () => {
+    analyticsResponse = () => Response.json({ success: false, error: 'no Atelier found' }, { status: 404 });
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).not.toBeInstanceOf(EndpointUnavailableError);
+    expect(err.message).toBe('no Atelier found');
+  });
+
+  test.each([
+    ['a JSON error', () => Response.json({ success: false, error: 'listing Tailorings failed' }, { status: 500 }), 'listing Tailorings failed'],
+    ['an empty body', () => new Response('', { status: 500 }), 'Savings request failed with status 500'],
+    ['success: false with status 200', () => Response.json({ success: false, error: 'boom' }), 'boom'],
+  ])('rejects with the server message for %s', async (_, response, message) => {
+    analyticsResponse = response;
+    const err = await apiClient.getSavingsSummary().catch((e) => e);
+    expect(err).not.toBeInstanceOf(EndpointUnavailableError);
+    expect(err.message).toBe(message);
+  });
+
+  test.each([
+    ['no data', { success: true }],
+    ['null data', { success: true, data: null }],
+    ['empty clusters', { success: true, data: { clusters: [] } }],
+    ['clusters that are not a list', { success: true, data: { clusters: 'nope' } }],
+  ])('returns an empty summary for %s', async (_, body) => {
+    analyticsResponse = () => Response.json(body);
+    const summary = await apiClient.getSavingsSummary();
+    expect(summary.clusters).toEqual([]);
+    expect(summary.totals).toEqual(amounts(0, 0, 0, 0, 0, 0));
+  });
+});
+
+describe('normalizeSavings', () => {
+  test('sums the clusters when there are no totals, keeping negatives and empty names', () => {
+    const summary = normalizeSavings({
+      clusters: [
+        { cluster: '', ...amounts(-0.5, 1, 0, 0, 1, 2), cost: { currency: 'EUR', reclaimable: -3, needed: 0 } },
+        { cluster: 'example-cluster', ...amounts(2, 'x' as unknown as number, Infinity, 0.25, 4, 0) },
+      ],
+    });
+    expect(summary.clusters.map((c) => c.cluster)).toEqual(['', 'example-cluster']);
+    expect(summary.clusters[1].reclaimableMemoryGiB).toBe(0);
+    expect(summary.clusters[1].neededCpuCores).toBe(0);
+    expect(summary.totals).toEqual({ ...amounts(1.5, 1, 0, 0.25, 5, 2), cost: { currency: 'EUR', period: undefined, reclaimable: -3, needed: 0 } });
+  });
+
+  test('top-level counts override the totals', () => {
+    const summary = normalizeSavings({ clusters: [], totals: amounts(0, 0), included: 0, skipped: 7 });
+    expect(summary.totals.included).toBe(0);
+    expect(summary.totals.skipped).toBe(7);
+  });
+
+  test('defaults the cost currency and coerces numeric strings', () => {
+    const summary = normalizeSavings({ clusters: [], totals: { reclaimableCpuCores: '0.5', cost: { reclaimable: '12.5' } } });
+    expect(summary.totals.reclaimableCpuCores).toBe(0.5);
+    expect(summary.totals.cost).toEqual({ currency: 'USD', period: undefined, reclaimable: 12.5, needed: 0 });
+  });
+});
+
+describe('apiClient.getTopGains', () => {
+  const gain = (container: string, cpu: number, mem: number) => ({
+    cluster: 'example-cluster',
+    namespace: 'example-namespace',
+    tailoring: 'example-app',
+    container,
+    replicas: 3,
+    reclaimableCpuCores: cpu,
+    reclaimableMemoryGiB: mem,
+  });
+
+  test('sends the limit and returns the list', async () => {
+    analyticsResponse = () => Response.json({ success: true, data: [gain('app', 1, 2)] });
+    const gains = await apiClient.getTopGains(5);
+    expect(lastPath).toBe('/api/v1/analytics/top-gains');
+    expect(lastQuery?.get('limit')).toBe('5');
+    expect(gains).toEqual([{ ...gain('app', 1, 2), targetKind: undefined, targetName: undefined }]);
+  });
+
+  test.each([
+    [0, '1'],
+    [2.7, '2'],
+    [NaN, '10'],
+  ])('sanitizes limit %p to %s', async (limit, sent) => {
+    analyticsResponse = () => Response.json({ success: true, data: [] });
+    await apiClient.getTopGains(limit);
+    expect(lastQuery?.get('limit')).toBe(sent);
+  });
+
+  test('merges separate cpu and memory rankings without duplicates', () => {
+    const gains = normalizeTopGains({ cpu: [gain('app', 1, 0), gain('sidecar', 0.5, 0)], memory: [gain('app', 1, 0), gain('cache', 0, 4)] });
+    expect(gains.map((g) => g.container)).toEqual(['app', 'sidecar', 'cache']);
+  });
+
+  test.each([
+    ['null', null],
+    ['an object without lists', { foo: 1 }],
+  ])('returns no gains for %s', (_, raw) => {
+    expect(normalizeTopGains(raw)).toEqual([]);
+  });
+
+  test('a plain 404 is EndpointUnavailableError', async () => {
+    analyticsResponse = () => new Response('404 page not found\n', { status: 404 });
+    expect(await apiClient.getTopGains().catch((e) => e)).toBeInstanceOf(EndpointUnavailableError);
+  });
+});
+
+describe('tailoringAnalysisState', () => {
+  const summary = {
+    name: 'example-app',
+    namespace: 'example-namespace',
+    targetKind: 'Deployment',
+    targetName: 'example-app',
+    paused: false,
+    targetFound: false,
+    vpaDetected: false,
+    containerCount: 0,
+    readyCondition: 'False',
+  };
+
+  test('reads the flat fields', () => {
+    expect(
+      tailoringAnalysisState({
+        ...summary,
+        analyzedStatus: 'False',
+        analyzedReason: 'TargetNotFound',
+        analyzedMessage: 'Deployment example-namespace/example-app not found',
+        nextAnalysisTime: '2026-01-01T00:05:00Z',
+        consecutiveFailures: 3,
+      }),
+    ).toEqual({
+      status: 'False',
+      reason: 'TargetNotFound',
+      message: 'Deployment example-namespace/example-app not found',
+      nextAnalysisTime: new Date('2026-01-01T00:05:00Z'),
+      consecutiveFailures: 3,
+    });
+  });
+
+  test('falls back to a nested condition', () => {
+    const state = tailoringAnalysisState({ ...summary, analyzedCondition: { status: 'False', reason: 'PrometheusError', message: 'timeout' } });
+    expect(state.reason).toBe('PrometheusError');
+    expect(state.status).toBe('False');
+  });
+
+  test('handles a summary from an older server', () => {
+    expect(tailoringAnalysisState(summary)).toEqual({
+      status: undefined,
+      reason: undefined,
+      message: undefined,
+      nextAnalysisTime: undefined,
+      consecutiveFailures: 0,
+    });
+  });
+
+  test('ignores unparseable times and bogus counts', () => {
+    const state = tailoringAnalysisState({ ...summary, nextAnalysisTime: 'soon', consecutiveFailures: -2, analyzedReason: '  ' });
+    expect(state.nextAnalysisTime).toBeUndefined();
+    expect(state.consecutiveFailures).toBe(0);
+    expect(state.reason).toBeUndefined();
   });
 });

@@ -27,6 +27,42 @@ export interface TailoringSummary {
   prState?: string;
   prNumber?: number;
   prUrl?: string;
+  // Analysis health; older servers omit these fields. Read them through
+  // tailoringAnalysisState() rather than directly.
+  analyzedStatus?: string;
+  analyzedReason?: string;
+  analyzedMessage?: string;
+  analyzedCondition?: { status?: string; reason?: string; message?: string };
+  nextAnalysisTime?: string;
+  consecutiveFailures?: number;
+}
+
+export interface TailoringAnalysisState {
+  /** Status of the Analyzed condition ("True", "False", "Unknown"), if the server reports one. */
+  status?: string;
+  reason?: string;
+  message?: string;
+  /** Parsed nextAnalysisTime; undefined when missing or unparseable. */
+  nextAnalysisTime?: Date;
+  consecutiveFailures: number;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+export function tailoringAnalysisState(summary: TailoringSummary): TailoringAnalysisState {
+  const condition = summary.analyzedCondition && typeof summary.analyzedCondition === 'object' ? summary.analyzedCondition : undefined;
+  const next = nonEmptyString(summary.nextAnalysisTime);
+  const nextDate = next ? new Date(next) : undefined;
+  const failures = Number(summary.consecutiveFailures);
+  return {
+    status: nonEmptyString(summary.analyzedStatus) ?? nonEmptyString(condition?.status),
+    reason: nonEmptyString(summary.analyzedReason) ?? nonEmptyString(condition?.reason),
+    message: nonEmptyString(summary.analyzedMessage) ?? nonEmptyString(condition?.message),
+    nextAnalysisTime: nextDate && !Number.isNaN(nextDate.getTime()) ? nextDate : undefined,
+    consecutiveFailures: Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0,
+  };
 }
 
 export interface Tailoring {
@@ -417,6 +453,233 @@ export function forecastError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err));
 }
 
+export const ANALYTICS_PATHS = {
+  savings: '/api/v1/analytics/savings',
+  topGains: '/api/v1/analytics/top-gains',
+} as const;
+
+/** The server does not have the requested endpoint (it predates it). */
+export class EndpointUnavailableError extends Error {
+  constructor(message = 'This needs a newer Sartor server version.') {
+    super(message);
+    this.name = 'EndpointUnavailableError';
+  }
+}
+
+/**
+ * Converts a failed request into an Error carrying the server's message. A 404
+ * without a JSON error body comes from a server without the endpoint and
+ * becomes an EndpointUnavailableError.
+ */
+export function endpointError(err: unknown, what: string): Error {
+  if (axios.isAxiosError(err)) {
+    const body: unknown = err.response?.data;
+    const serverMessage =
+      body && typeof body === 'object' && typeof (body as ApiResponse<unknown>).error === 'string'
+        ? (body as ApiResponse<unknown>).error?.trim()
+        : undefined;
+    if (err.response?.status === 404 && !serverMessage) return new EndpointUnavailableError();
+    if (serverMessage) return new Error(serverMessage);
+    if (err.response) return new Error(`${what} request failed with status ${err.response.status}`);
+    return new Error(err.message || `${what} request failed`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/** Requested-resource deltas, computed by the server as (current - recommended request) x replicas. */
+export interface SavingsAmounts {
+  reclaimableCpuCores: number;
+  reclaimableMemoryGiB: number;
+  neededCpuCores: number;
+  neededMemoryGiB: number;
+  /** Tailorings whose recommendations went into the totals. */
+  included: number;
+  /** Tailorings left out, e.g. not analyzed yet or without a recommendation. */
+  skipped: number;
+  /** Only present when the request carried price parameters. */
+  cost?: SavingsCost;
+}
+
+export interface SavingsCost {
+  currency: string;
+  /** E.g. "month"; the period the amounts cover. */
+  period?: string;
+  reclaimable: number;
+  needed: number;
+}
+
+export interface NamespaceSavings extends SavingsAmounts {
+  namespace: string;
+}
+
+export interface ClusterSavings extends SavingsAmounts {
+  /** Empty when the server has no cluster label configured. */
+  cluster: string;
+  namespaces: NamespaceSavings[];
+}
+
+export interface SavingsSummary {
+  clusters: ClusterSavings[];
+  totals: SavingsAmounts;
+}
+
+export interface SavingsPriceParams {
+  cpuPricePerCoreHour?: number;
+  memoryPricePerGiBHour?: number;
+  currency?: string;
+}
+
+export interface TopGain {
+  cluster: string;
+  namespace: string;
+  /** Name of the Tailoring, used to link to its detail page. */
+  tailoring?: string;
+  targetKind?: string;
+  targetName?: string;
+  container: string;
+  replicas?: number;
+  reclaimableCpuCores: number;
+  reclaimableMemoryGiB: number;
+}
+
+function finiteNumber(value: unknown): number {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
+function count(value: unknown): number {
+  return Math.max(0, Math.round(finiteNumber(value)));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeCost(raw: unknown): SavingsCost | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = asRecord(raw);
+  return {
+    currency: nonEmptyString(c.currency) ?? 'USD',
+    period: nonEmptyString(c.period),
+    reclaimable: finiteNumber(c.reclaimable),
+    needed: finiteNumber(c.needed),
+  };
+}
+
+function normalizeAmounts(raw: unknown): SavingsAmounts {
+  const r = asRecord(raw);
+  const amounts: SavingsAmounts = {
+    reclaimableCpuCores: finiteNumber(r.reclaimableCpuCores),
+    reclaimableMemoryGiB: finiteNumber(r.reclaimableMemoryGiB),
+    neededCpuCores: finiteNumber(r.neededCpuCores),
+    neededMemoryGiB: finiteNumber(r.neededMemoryGiB),
+    included: count(r.included),
+    skipped: count(r.skipped),
+  };
+  const cost = normalizeCost(r.cost);
+  if (cost) amounts.cost = cost;
+  return amounts;
+}
+
+function sumAmounts(items: SavingsAmounts[]): SavingsAmounts {
+  const total: SavingsAmounts = {
+    reclaimableCpuCores: 0,
+    reclaimableMemoryGiB: 0,
+    neededCpuCores: 0,
+    neededMemoryGiB: 0,
+    included: 0,
+    skipped: 0,
+  };
+  for (const item of items) {
+    total.reclaimableCpuCores += item.reclaimableCpuCores;
+    total.reclaimableMemoryGiB += item.reclaimableMemoryGiB;
+    total.neededCpuCores += item.neededCpuCores;
+    total.neededMemoryGiB += item.neededMemoryGiB;
+    total.included += item.included;
+    total.skipped += item.skipped;
+    if (item.cost) {
+      total.cost ??= { currency: item.cost.currency, period: item.cost.period, reclaimable: 0, needed: 0 };
+      total.cost.reclaimable += item.cost.reclaimable;
+      total.cost.needed += item.cost.needed;
+    }
+  }
+  return total;
+}
+
+/** Coerces a savings response into SavingsSummary, tolerating missing or malformed fields. */
+export function normalizeSavings(raw: unknown): SavingsSummary {
+  const r = asRecord(raw);
+  const clusters: ClusterSavings[] = (Array.isArray(r.clusters) ? r.clusters : []).map((c) => {
+    const cluster = asRecord(c);
+    const namespaces = (Array.isArray(cluster.namespaces) ? cluster.namespaces : [])
+      .map((n) => ({ namespace: nonEmptyString(asRecord(n).namespace) ?? '', ...normalizeAmounts(n) }))
+      .sort((a, b) => b.reclaimableCpuCores - a.reclaimableCpuCores || b.reclaimableMemoryGiB - a.reclaimableMemoryGiB);
+    return { cluster: nonEmptyString(cluster.cluster) ?? '', namespaces, ...normalizeAmounts(c) };
+  });
+  const totals = r.totals && typeof r.totals === 'object' ? normalizeAmounts(r.totals) : sumAmounts(clusters);
+  // Some responses report the counts at the top level only.
+  if (r.included !== undefined) totals.included = count(r.included);
+  if (r.skipped !== undefined) totals.skipped = count(r.skipped);
+  return { clusters, totals };
+}
+
+function normalizeTopGain(raw: unknown): TopGain {
+  const g = asRecord(raw);
+  const replicas = finiteNumber(g.replicas);
+  return {
+    cluster: nonEmptyString(g.cluster) ?? '',
+    namespace: nonEmptyString(g.namespace) ?? '',
+    tailoring: nonEmptyString(g.tailoring) ?? nonEmptyString(g.tailoringName),
+    targetKind: nonEmptyString(g.targetKind),
+    targetName: nonEmptyString(g.targetName),
+    container: nonEmptyString(g.container) ?? '',
+    replicas: replicas > 0 ? replicas : undefined,
+    reclaimableCpuCores: finiteNumber(g.reclaimableCpuCores),
+    reclaimableMemoryGiB: finiteNumber(g.reclaimableMemoryGiB),
+  };
+}
+
+/**
+ * Accepts either one list (each entry carries both resources) or separate
+ * `cpu` and `memory` rankings, and returns a single de-duplicated list.
+ */
+export function normalizeTopGains(raw: unknown): TopGain[] {
+  const lists: unknown[][] = Array.isArray(raw)
+    ? [raw]
+    : [asRecord(raw).items, asRecord(raw).cpu, asRecord(raw).memory].filter((l): l is unknown[] => Array.isArray(l));
+  const seen = new Map<string, TopGain>();
+  for (const gain of lists.flat().map(normalizeTopGain)) {
+    const key = [gain.cluster, gain.namespace, gain.tailoring, gain.targetName, gain.container].join('\u0000');
+    if (!seen.has(key)) seen.set(key, gain);
+  }
+  return [...seen.values()];
+}
+
+export function savingsParams(prices?: SavingsPriceParams): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (prices?.cpuPricePerCoreHour !== undefined && Number.isFinite(prices.cpuPricePerCoreHour)) {
+    params.cpuPricePerCoreHour = String(prices.cpuPricePerCoreHour);
+  }
+  if (prices?.memoryPricePerGiBHour !== undefined && Number.isFinite(prices.memoryPricePerGiBHour)) {
+    params.memoryPricePerGiBHour = String(prices.memoryPricePerGiBHour);
+  }
+  if (prices?.currency) params.currency = prices.currency;
+  return params;
+}
+
+async function getAnalytics<T>(path: string, what: string, params: Record<string, string>): Promise<T | undefined> {
+  let body: ApiResponse<T>;
+  try {
+    body = (await api.get<ApiResponse<T>>(path, { params })).data;
+  } catch (err) {
+    throw endpointError(err, what);
+  }
+  if (body && typeof body === 'object' && body.success === false) {
+    throw new Error((typeof body.error === 'string' && body.error.trim()) || `${what} request failed`);
+  }
+  return body?.data;
+}
+
 export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
   namespace: string;
   name: string;
@@ -558,6 +821,16 @@ export const apiClient = {
       throw new Error((typeof body?.error === 'string' && body.error.trim()) || 'The server returned no forecast');
     }
     return body.data;
+  },
+
+  // Right-sizing analytics; these do not depend on OpenCost. A server without
+  // the endpoint rejects with EndpointUnavailableError.
+  getSavingsSummary: async (prices?: SavingsPriceParams): Promise<SavingsSummary> =>
+    normalizeSavings(await getAnalytics<unknown>(ANALYTICS_PATHS.savings, 'Savings', savingsParams(prices))),
+
+  getTopGains: async (limit = 10): Promise<TopGain[]> => {
+    const params = { limit: String(Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 10) };
+    return normalizeTopGains(await getAnalytics<unknown>(ANALYTICS_PATHS.topGains, 'Top gains', params));
   },
 
   // OpenCost APIs
