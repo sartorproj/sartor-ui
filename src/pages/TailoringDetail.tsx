@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router';
-import { apiClient } from '../lib/api';
+import { apiClient, tailoringMetricsTarget } from '../lib/api';
 import type { Tailoring, FitProfile } from '../lib/api';
 import { ArrowLeft, Scissors, AlertCircle, CheckCircle, XCircle, Clock, ExternalLink, Activity } from 'lucide-react';
 import { MetricsChart, type ResourceLine, type TimeSeriesDataPoint } from '@/components/MetricsChart';
@@ -40,16 +40,17 @@ export default function TailoringDetail() {
     queryFn: async () => {
       if (!tailoring || !containerNames.length) return {};
       const results: Record<string, Array<{ timestamp: number; value: number; pod?: string }>> = {};
+      const target = tailoringMetricsTarget(tailoring);
       
       for (const containerName of containerNames) {
         try {
           const data = await apiClient.getPrometheusMetrics(
-            namespace!,
-            tailoring.spec.target.name,
+            target.namespace,
+            target.name,
             containerName,
             'cpu',
             cpuTimeRange,
-            { cluster: tailoring.spec.target.cluster, kind: tailoring.spec.target.kind }
+            target
           );
           results[containerName] = data;
         } catch (err) {
@@ -69,16 +70,17 @@ export default function TailoringDetail() {
     queryFn: async () => {
       if (!tailoring || !containerNames.length) return {};
       const results: Record<string, Array<{ timestamp: number; value: number; pod?: string }>> = {};
+      const target = tailoringMetricsTarget(tailoring);
       
       for (const containerName of containerNames) {
         try {
           const data = await apiClient.getPrometheusMetrics(
-            namespace!,
-            tailoring.spec.target.name,
+            target.namespace,
+            target.name,
             containerName,
             'memory',
             memoryTimeRange,
-            { cluster: tailoring.spec.target.cluster, kind: tailoring.spec.target.kind }
+            target
           );
           results[containerName] = data;
         } catch (err) {

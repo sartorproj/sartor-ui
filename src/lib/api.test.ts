@@ -14,7 +14,19 @@ afterAll(() => {
 
 // The API base URL is read when the module loads, so import it after the stub server is up.
 process.env.VITE_API_URL = server.url.origin;
-const { apiClient, prometheusMetricsParams } = await import('./api');
+const { apiClient, prometheusMetricsParams, tailoringMetricsTarget } = await import('./api');
+type Tailoring = import('./api').Tailoring;
+
+const tailoring = (target: Tailoring['spec']['target'], namespace = 'example-system'): Tailoring => ({
+  metadata: { name: 'example-tailoring', namespace, creationTimestamp: '2026-01-01T00:00:00Z' },
+  spec: {
+    target,
+    fitProfileRef: { name: 'balanced' },
+    writeBack: { repository: 'example/repo', path: 'deploy.yaml', type: 'raw' },
+    paused: false,
+  },
+  status: {},
+});
 
 const base = {
   namespace: 'default',
@@ -98,4 +110,67 @@ describe('apiClient.getPrometheusMetrics', () => {
       resourceType: 'memory',
     });
   });
+});
+
+describe('tailoringMetricsTarget', () => {
+  test('uses the target namespace when it differs from the Tailoring namespace', () => {
+    expect(
+      tailoringMetricsTarget(
+        tailoring({ kind: 'StatefulSet', name: 'example-app', namespace: 'example-apps', cluster: 'example-cluster' }),
+      ),
+    ).toEqual({ namespace: 'example-apps', name: 'example-app', cluster: 'example-cluster', kind: 'StatefulSet' });
+  });
+
+  test('uses the target namespace when it matches the Tailoring namespace', () => {
+    const target = tailoringMetricsTarget(
+      tailoring({ kind: 'Deployment', name: 'example-app', namespace: 'example-apps' }, 'example-apps'),
+    );
+    expect(target.namespace).toBe('example-apps');
+  });
+
+  test.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])('falls back to the Tailoring namespace when the target namespace is %s', (_, namespace) => {
+    const target = tailoringMetricsTarget(tailoring({ kind: 'DaemonSet', name: 'example-agent', namespace }));
+    expect(target).toEqual({ namespace: 'example-system', name: 'example-agent', cluster: undefined, kind: 'DaemonSet' });
+  });
+});
+
+describe('metrics requests for a Tailoring', () => {
+  const crossNamespace = tailoring({
+    kind: 'StatefulSet',
+    name: 'example-app',
+    namespace: 'example-apps',
+    cluster: 'example-cluster',
+  });
+  const sameNamespace = tailoring({ kind: 'Deployment', name: 'example-web' });
+
+  test('getPrometheusMetrics queries the target namespace, cluster and kind', async () => {
+    const target = tailoringMetricsTarget(crossNamespace);
+    await apiClient.getPrometheusMetrics(target.namespace, target.name, 'app', 'cpu', '1h', target);
+    expect(Object.fromEntries(lastQuery!)).toEqual({
+      namespace: 'example-apps',
+      podNamePrefix: 'example-app',
+      containerName: 'app',
+      resourceType: 'cpu',
+      window: '1h',
+      cluster: 'example-cluster',
+      kind: 'StatefulSet',
+    });
+  });
+
+  test('getPrometheusMetrics falls back to the Tailoring namespace', async () => {
+    const target = tailoringMetricsTarget(sameNamespace);
+    await apiClient.getPrometheusMetrics(target.namespace, target.name, 'web', 'memory', '1h', target);
+    expect(Object.fromEntries(lastQuery!)).toEqual({
+      namespace: 'example-system',
+      podNamePrefix: 'example-web',
+      containerName: 'web',
+      resourceType: 'memory',
+      window: '1h',
+      kind: 'Deployment',
+    });
+  });
+
 });

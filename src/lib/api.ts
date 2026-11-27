@@ -39,6 +39,7 @@ export interface Tailoring {
     target: {
       kind: string;
       name: string;
+      namespace?: string;
       cluster?: string;
     };
     fitProfileRef: {
@@ -350,6 +351,26 @@ export function prometheusMetricsParams(
     params.kind = target.kind;
   }
   return params;
+}
+
+export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
+  namespace: string;
+  name: string;
+}
+
+/**
+ * Returns the workload whose metrics belong to a Tailoring. The target may live
+ * in another namespace; when spec.target.namespace is unset it defaults to the
+ * Tailoring's own namespace, as on the server.
+ */
+export function tailoringMetricsTarget(tailoring: Pick<Tailoring, 'metadata' | 'spec'>): TailoringMetricsTarget {
+  const { target } = tailoring.spec;
+  return {
+    namespace: target.namespace || tailoring.metadata.namespace,
+    name: target.name,
+    cluster: target.cluster,
+    kind: target.kind,
+  };
 }
 
 export const apiClient = {
