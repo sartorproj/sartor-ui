@@ -141,7 +141,68 @@ export interface Tailoring {
     argoCDSyncTriggered?: boolean;
     argoCDSyncTime?: string;
     analysisTimestampWhenPRCreated?: string;
+    vpaDetected?: boolean;
+    // Older servers omit these; read them through the normalizers in ./scaling.
+    autoscalers?: DetectedAutoscaler[];
+    scaling?: ScalingSummary;
   };
+}
+
+/** status.autoscalers[]; minReplicas and later fields need a newer server. */
+export interface DetectedAutoscaler {
+  /** HorizontalPodAutoscaler, VerticalPodAutoscaler or ScaledObject. */
+  kind: string;
+  name?: string;
+  /** VPA update mode (Off, Initial, Recreate, Auto, ...). */
+  updateMode?: string;
+  utilizationResources?: string[];
+  /** The ScaledObject that owns this HPA. */
+  managedBy?: string;
+  minReplicas?: number;
+  maxReplicas?: number;
+  utilizationTargets?: Array<{ resource: string; container?: string; averageUtilization: number }>;
+  /** Metrics besides cpu/memory Utilization, e.g. "External" or a KEDA trigger type. */
+  otherMetrics?: string[];
+}
+
+/** PerPod, HPAUtilization or VPABaseline. */
+export type ScalingSizing = string;
+
+export interface ResourceScaling {
+  sizing: ScalingSizing;
+  perPodRequest?: string;
+  request?: string;
+  /** Percent. */
+  targetUtilization?: number;
+  perPodUsage?: string;
+  /** P99/P50 as a decimal string, e.g. "3.20". */
+  peakToBaseline?: string;
+  spiky?: boolean;
+  reason?: string;
+}
+
+export interface ScalingSummary {
+  /** Kind/name. */
+  autoscalers?: string[];
+  /** source: History, Current or Fixed. */
+  replicas?: { min: number; typical: number; max: number; source: string };
+  alignedResources?: string[];
+  containers?: Array<{ name: string; cpu?: ResourceScaling; memory?: ResourceScaling }>;
+  vpa?: Array<{
+    name: string;
+    updateMode?: string;
+    writeBack: boolean;
+    containers?: Array<{
+      name: string;
+      minAllowed?: ResourceValues;
+      maxAllowed?: ResourceValues;
+      currentMinAllowed?: ResourceValues;
+      currentMaxAllowed?: ResourceValues;
+    }>;
+    reason?: string;
+  }>;
+  conflicts?: Array<{ resource?: string; autoscalers: string[]; message: string }>;
+  reason: string;
 }
 
 
@@ -752,6 +813,93 @@ async function getAnalytics<T>(path: string, what: string, params: Record<string
   return body?.data;
 }
 
+/** A quantity as a string; numbers are stringified, anything else dropped. */
+export function quantityString(value: unknown): string | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : undefined;
+  return nonEmptyString(value);
+}
+
+function normalizeRequirements(raw: unknown) {
+  const r = asRecord(raw);
+  const values = (v: unknown) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+    const q = asRecord(v);
+    return { cpu: quantityString(q.cpu), memory: quantityString(q.memory) };
+  };
+  return { requests: values(r.requests), limits: values(r.limits) };
+}
+
+/**
+ * Guarantees the object structure the detail page walks (metadata, spec,
+ * status, lastAnalysis containers) so that a malformed response renders
+ * empty values instead of throwing. Other fields are passed through.
+ */
+export function normalizeTailoring(raw: unknown): Tailoring {
+  const r = asRecord(raw);
+  const metadata = asRecord(r.metadata);
+  const spec = asRecord(r.spec);
+  const status = asRecord(r.status);
+  const target = asRecord(spec.target);
+  const fitProfileRef = asRecord(spec.fitProfileRef);
+  const normalized = {
+    ...r,
+    metadata: {
+      ...metadata,
+      name: nonEmptyString(metadata.name) ?? '',
+      namespace: nonEmptyString(metadata.namespace) ?? '',
+    },
+    spec: {
+      ...spec,
+      target: {
+        ...target,
+        kind: nonEmptyString(target.kind) ?? '',
+        name: nonEmptyString(target.name) ?? '',
+        namespace: nonEmptyString(target.namespace),
+        cluster: nonEmptyString(target.cluster),
+      },
+      fitProfileRef: {
+        ...fitProfileRef,
+        name: nonEmptyString(fitProfileRef.name) ?? '',
+        namespace: nonEmptyString(fitProfileRef.namespace),
+      },
+      writeBack: asRecord(spec.writeBack),
+      paused: spec.paused === true,
+    },
+    status: {
+      ...status,
+      conditions: asList(status.conditions).filter((c) => c && typeof c === 'object'),
+      prState: nonEmptyString(status.prState),
+      prUrl: nonEmptyString(status.prUrl),
+      prNumber: optionalNumber(status.prNumber),
+      branchName: nonEmptyString(status.branchName),
+    },
+  } as unknown as Tailoring;
+  if (status.lastAnalysis && typeof status.lastAnalysis === 'object' && !Array.isArray(status.lastAnalysis)) {
+    const analysis = asRecord(status.lastAnalysis);
+    normalized.status.lastAnalysis = {
+      ...analysis,
+      timestamp: nonEmptyString(analysis.timestamp) ?? '',
+      containers: asList(analysis.containers)
+        .filter((c) => c && typeof c === 'object' && !Array.isArray(c))
+        .map((c) => {
+          const container = asRecord(c);
+          return {
+            name: nonEmptyString(container.name) ?? '',
+            current: normalizeRequirements(container.current),
+            recommended: normalizeRequirements(container.recommended),
+            p95CPU: quantityString(container.p95CPU),
+            p99CPU: quantityString(container.p99CPU),
+            p95Memory: quantityString(container.p95Memory),
+            p99Memory: quantityString(container.p99Memory),
+          };
+        }),
+    };
+  } else {
+    delete normalized.status.lastAnalysis;
+  }
+  return normalized;
+}
+
 export interface TailoringMetricsTarget extends PrometheusMetricsTarget {
   namespace: string;
   name: string;
@@ -781,9 +929,10 @@ export const apiClient = {
   },
 
   getTailoring: async (namespace: string, name: string): Promise<Tailoring> => {
-    const response = await api.get<ApiResponse<Tailoring>>(`/api/v1/tailorings/${namespace}/${name}`);
-    if (!response.data.data) throw new Error('Tailoring not found');
-    return response.data.data;
+    const response = await api.get<ApiResponse<unknown>>(`/api/v1/tailorings/${namespace}/${name}`);
+    const data = response.data?.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Tailoring not found');
+    return normalizeTailoring(data);
   },
 
 
