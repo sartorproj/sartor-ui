@@ -7,6 +7,7 @@ import {
   CartesianGrid,
   XAxis,
   YAxis,
+  ReferenceArea,
   ReferenceLine,
 } from "recharts"
 import {
@@ -25,8 +26,23 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Cpu, HardDrive, TrendingUp, TrendingDown, Minus } from "lucide-react"
-import { computeYDomain, placeholderSeries, plottableLines } from "@/lib/metricsChart"
+import { Button } from "@/components/ui/button"
+import { Cpu, HardDrive, TrendingUp, TrendingDown, Minus, ChartSpline } from "lucide-react"
+import {
+  collectYValues,
+  computeYDomain,
+  describeForecast,
+  forecastSeries,
+  placeholderSeries,
+  plottableLines,
+  withForecast,
+  visibleSeriesKeys,
+  FORECAST_KEY,
+  FORECAST_RANGE_KEY,
+  type ChartRow,
+  type PercentileBounds,
+} from "@/lib/metricsChart"
+import type { PrometheusForecast } from "@/lib/api"
 
 export interface TimeSeriesDataPoint {
   timestamp: number
@@ -54,7 +70,29 @@ export interface MetricsChartProps {
   onTimeRangeChange?: (range: string) => void
   showPerPodToggle?: boolean
   className?: string
+  /** Observed P95/P99 usage from the last analysis, drawn as lines with a band between them. */
+  percentileBounds?: PercentileBounds
+  /** Shown instead of being swallowed when the bounds could not be determined. */
+  percentileBoundsError?: string
+  /** Enables the Forecast toggle; the parent fetches the forecast on demand. */
+  forecast?: MetricsChartForecast
 }
+
+export interface MetricsChartForecast {
+  enabled: boolean
+  onToggle: (enabled: boolean) => void
+  loading?: boolean
+  data?: PrometheusForecast
+  error?: string
+  /** The error means the server has no forecast endpoint rather than a failure. */
+  unavailable?: boolean
+}
+
+export const OBSERVED_P95 = "Observed P95"
+export const OBSERVED_P99 = "Observed P99"
+const BOUND_COLOR = "hsl(25 95% 55%)"
+// Theme-tuned in index.css so the usage area is readable on light and dark backgrounds.
+const USAGE_COLOR = "var(--color-chart-usage)"
 
 const TIME_RANGES = [
   { value: "15m", label: "15 min" },
@@ -91,11 +129,31 @@ export function MetricsChart({
   onTimeRangeChange,
   showPerPodToggle = true,
   className,
+  percentileBounds,
+  percentileBoundsError,
+  forecast,
 }: MetricsChartProps) {
   const [timeRange, setTimeRange] = React.useState(defaultTimeRange)
   const [showPerPod, setShowPerPod] = React.useState(false)
   const [hiddenSeries, setHiddenSeries] = React.useState<Set<string>>(new Set())
-  const resourceLines = React.useMemo(() => plottableLines(rawResourceLines ?? []), [rawResourceLines])
+  const p95 = percentileBounds?.p95
+  const p99 = percentileBounds?.p99
+  const resourceLines = React.useMemo(() => {
+    const boundLines: ResourceLine[] = []
+    if (p95 !== undefined) {
+      boundLines.push({ name: OBSERVED_P95, value: p95, color: BOUND_COLOR, type: 'strategy', dashed: true })
+    }
+    if (p99 !== undefined) {
+      boundLines.push({ name: OBSERVED_P99, value: p99, color: BOUND_COLOR, type: 'strategy', dashed: true })
+    }
+    return plottableLines([...(rawResourceLines ?? []), ...boundLines])
+  }, [rawResourceLines, p95, p99])
+  const band = React.useMemo(() => {
+    const lower = resourceLines.find((l) => l.name === OBSERVED_P95)?.value
+    const upper = resourceLines.find((l) => l.name === OBSERVED_P99)?.value
+    if (lower === undefined || upper === undefined) return undefined
+    return { y1: Math.min(lower, upper), y2: Math.max(lower, upper) }
+  }, [resourceLines])
 
   // Process data to support per-pod view
   const { chartData, chartConfig, podNames } = React.useMemo(() => {
@@ -150,7 +208,7 @@ export function MetricsChart({
     const config: ChartConfig = {
       usage: {
         label: resourceType === 'cpu' ? "CPU Usage (cores)" : "Memory Usage (MiB)",
-        color: "hsl(var(--chart-1))",
+        color: USAGE_COLOR,
       },
     }
 
@@ -237,6 +295,26 @@ export function MetricsChart({
     return placeholderSeries(resourceLines, placeholderTimestamp)
   }, [chartData, hasTimeSeriesData, hasResourceLines, resourceLines, placeholderTimestamp])
 
+  const forecastData = forecast?.enabled && !forecast.error ? forecast.data : undefined
+  const lastUsage = chartData[chartData.length - 1]
+  const lastUsageTimestamp: number | undefined = lastUsage?.timestamp
+  const lastUsageValue: number | undefined = lastUsage?.usage
+  const forecastResult = React.useMemo(() => {
+    if (!forecastData) return undefined
+    const anchor = lastUsageTimestamp !== undefined && lastUsageValue !== undefined
+      ? { timestamp: lastUsageTimestamp, value: lastUsageValue }
+      : undefined
+    return forecastSeries(forecastData, anchor)
+  }, [forecastData, lastUsageTimestamp, lastUsageValue])
+  const forecastShown = !!forecastResult && forecastResult.rows.length > 0
+  const forecastInfo = describeForecast(forecastData)
+
+  // Without a forecast this is displayData and the original category X axis.
+  const { data: plotData, xDomain } = React.useMemo(
+    () => withForecast(displayData as ChartRow[], forecastShown ? forecastResult.rows : undefined),
+    [displayData, forecastShown, forecastResult],
+  )
+
   if (displayData.length === 0 && !hasResourceLines) {
     return (
       <Card className={className}>
@@ -259,6 +337,9 @@ export function MetricsChart({
             <div className="text-center">
               <p className="text-sm">No data available</p>
               <p className="text-xs mt-1">No resource limits or Prometheus metrics found</p>
+              {percentileBoundsError && (
+                <p role="status" className="text-xs mt-2 text-red-600 dark:text-red-400">{percentileBoundsError}</p>
+              )}
             </div>
           </div>
         </CardContent>
@@ -266,26 +347,46 @@ export function MetricsChart({
     )
   }
 
-  // Calculate Y-axis domain
-  const allValues = displayData.flatMap((d) => {
-    const vals: number[] = []
-    if (!hiddenSeries.has('usage') && d.usage !== undefined) vals.push(d.usage)
-    if (showPerPod) {
-      podNames.forEach((pod) => {
-        if (!hiddenSeries.has(`pod_${pod}`) && d[`pod_${pod}`] !== undefined) {
-          vals.push(d[`pod_${pod}`])
-        }
-      })
-    }
-    resourceLines.forEach((line) => {
-      if (!hiddenSeries.has(line.name) && d[line.name] !== undefined) {
-        vals.push(d[line.name])
-      }
-    })
-    return vals
+  const yKeys = visibleSeriesKeys({
+    podNames: showPerPod ? podNames : [],
+    lineNames: resourceLines.map((line) => line.name),
+    forecast: forecastShown,
+    hidden: hiddenSeries,
   })
+  const yDomain = computeYDomain(collectYValues(plotData, yKeys))
 
-  const yDomain = computeYDomain(allValues)
+  const formatXTick = (value: number) => {
+    const date = new Date(value * 1000)
+    // A forecast usually spans more than a day, so its ticks also need the date.
+    if (xDomain && xDomain[1] - xDomain[0] > 24 * 60 * 60) {
+      return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    }
+    return date.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  const notices: Array<{ text: string; tone: 'error' | 'info' }> = []
+  if (percentileBoundsError) notices.push({ text: percentileBoundsError, tone: 'error' })
+  if (forecast?.enabled) {
+    if (forecast.error) {
+      notices.push({
+        text: forecast.unavailable ? forecast.error : `Forecast failed: ${forecast.error}`,
+        tone: forecast.unavailable ? 'info' : 'error',
+      })
+    } else if (forecast.loading) {
+      notices.push({ text: 'Loading forecast…', tone: 'info' })
+    } else if (forecastData && !forecastShown) {
+      notices.push({
+        text: `No forecast: ${forecastData.fallbackReason?.trim() || 'the server returned no usable forecast points.'}`,
+        tone: 'error',
+      })
+    } else if (forecastShown && forecastData?.fallbackReason?.trim()) {
+      notices.push({ text: `Forecast fallback: ${forecastData.fallbackReason.trim()}`, tone: 'info' })
+    }
+  }
+  const forecastLabel = forecastInfo.model ? `Forecast (${forecastInfo.model})` : 'Forecast'
 
   return (
     <Card className={className}>
@@ -336,6 +437,19 @@ export function MetricsChart({
               </div>
             )}
             
+            {forecast && (
+              <Button
+                type="button"
+                variant={forecast.enabled ? 'secondary' : 'outline'}
+                size="sm"
+                aria-pressed={forecast.enabled}
+                onClick={() => forecast.onToggle(!forecast.enabled)}
+              >
+                <ChartSpline />
+                Forecast
+              </Button>
+            )}
+
             {/* Time range selector */}
             {showTimeRangeSelector && (
               <Select value={timeRange} onValueChange={handleTimeRangeChange}>
@@ -367,12 +481,38 @@ export function MetricsChart({
                   hiddenSeries.has('usage') ? 'opacity-40' : ''
                 }`}
               >
-                <div 
+                <div
                   className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: 'hsl(var(--chart-1))' }}
+                  style={{ backgroundColor: `color-mix(in srgb, ${USAGE_COLOR} 25%, transparent)`, border: `2px solid ${USAGE_COLOR}` }}
                 />
                 <span>{resourceType === 'cpu' ? 'CPU Usage' : 'Memory Usage'}</span>
               </button>
+            )}
+
+            {forecastShown && (
+              <>
+                <button
+                  onClick={() => toggleSeries(FORECAST_KEY)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded hover:bg-muted/50 transition-colors ${
+                    hiddenSeries.has(FORECAST_KEY) ? 'opacity-40' : ''
+                  }`}
+                >
+                  <div className="w-5" style={{ borderTop: `2px dashed ${USAGE_COLOR}` }} />
+                  <span>{forecastLabel}</span>
+                </button>
+                <button
+                  onClick={() => toggleSeries(FORECAST_RANGE_KEY)}
+                  className={`flex items-center gap-1.5 px-2 py-1 rounded hover:bg-muted/50 transition-colors ${
+                    hiddenSeries.has(FORECAST_RANGE_KEY) ? 'opacity-40' : ''
+                  }`}
+                >
+                  <div
+                    className="w-3 h-3 rounded-sm"
+                    style={{ backgroundColor: `color-mix(in srgb, ${USAGE_COLOR} 25%, transparent)` }}
+                  />
+                  <span>{forecastInfo.interval ? `Forecast ${forecastInfo.interval}` : 'Forecast interval'}</span>
+                </button>
+              </>
             )}
             
             {/* Resource line legend items */}
@@ -396,18 +536,24 @@ export function MetricsChart({
             ))}
           </div>
         )}
-        
+
+        {notices.length > 0 && (
+          <div role="status" className="mb-3 space-y-1 text-center text-xs">
+            {notices.map((notice) => (
+              <p key={notice.text} className={notice.tone === 'error' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'}>
+                {notice.text}
+              </p>
+            ))}
+          </div>
+        )}
+
         <ChartContainer config={chartConfig} className="w-full" style={{ height: `${height}px` }}>
           <AreaChart
             accessibilityLayer
-            data={displayData}
+            data={plotData}
             margin={{ left: 8, right: 8, top: 8, bottom: 8 }}
           >
             <defs>
-              <linearGradient id={`gradient-usage-${resourceType}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="var(--color-usage)" stopOpacity={0.4} />
-                <stop offset="95%" stopColor="var(--color-usage)" stopOpacity={0.05} />
-              </linearGradient>
               {podNames.map((pod) => (
                 <linearGradient key={pod} id={`gradient-pod-${pod}`} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor={`var(--color-pod_${pod})`} stopOpacity={0.3} />
@@ -425,13 +571,10 @@ export function MetricsChart({
               tickMargin={8}
               minTickGap={50}
               tick={{ fontSize: 11 }}
-              tickFormatter={(value) => {
-                const date = new Date(value * 1000)
-                return date.toLocaleTimeString(undefined, {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })
-              }}
+              tickFormatter={formatXTick}
+              // Forecast points are not spaced like the usage samples, so a time axis is needed to
+              // place them; without a forecast the original category axis is kept.
+              {...(xDomain ? { type: 'number' as const, domain: xDomain } : {})}
             />
             
             <YAxis
@@ -450,8 +593,15 @@ export function MetricsChart({
                 if (!active || !payload?.length) return null
                 
                 const timestamp = label as number
-                const dataPoint = displayData.find(d => d.timestamp === timestamp)
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const dataPoint: Record<string, any> | undefined = plotData.find(d => d.timestamp === timestamp)
                 if (!dataPoint) return null
+                const forecastValue: number | undefined = forecastShown && !hiddenSeries.has(FORECAST_KEY)
+                  ? dataPoint[FORECAST_KEY]
+                  : undefined
+                const forecastRange: [number, number] | undefined = forecastShown && !hiddenSeries.has(FORECAST_RANGE_KEY)
+                  ? dataPoint[FORECAST_RANGE_KEY]
+                  : undefined
                 
                 return (
                   <div className="rounded-lg border bg-background p-3 shadow-xl">
@@ -468,9 +618,9 @@ export function MetricsChart({
                       {hasTimeSeriesData && !hiddenSeries.has('usage') && dataPoint.usage !== undefined && (
                         <div className="flex items-center justify-between gap-4">
                           <div className="flex items-center gap-2">
-                            <div 
+                            <div
                               className="w-2.5 h-2.5 rounded-sm"
-                              style={{ backgroundColor: 'hsl(var(--chart-1))' }}
+                              style={{ backgroundColor: USAGE_COLOR }}
                             />
                             <span className="text-muted-foreground">
                               {resourceType === 'cpu' ? 'CPU Usage' : 'Memory Usage'}
@@ -502,7 +652,39 @@ export function MetricsChart({
                           </div>
                         )
                       })}
-                      
+
+                      {(forecastValue !== undefined || forecastRange) && (
+                        <>
+                          <div className="border-t my-1" />
+                          {forecastValue !== undefined && (
+                            <div className="flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-2">
+                                <div className="w-4" style={{ borderTop: `2px dashed ${USAGE_COLOR}` }} />
+                                <span className="text-muted-foreground">Forecast</span>
+                              </div>
+                              <span className="font-mono font-medium">{formatValue(forecastValue)}</span>
+                            </div>
+                          )}
+                          {forecastRange && (
+                            <>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground pl-6">Lower</span>
+                                <span className="font-mono font-medium">{formatValue(forecastRange[0])}</span>
+                              </div>
+                              <div className="flex items-center justify-between gap-4">
+                                <span className="text-muted-foreground pl-6">Upper</span>
+                                <span className="font-mono font-medium">{formatValue(forecastRange[1])}</span>
+                              </div>
+                            </>
+                          )}
+                          {(forecastInfo.model || forecastInfo.interval) && (
+                            <div className="text-[10px] text-muted-foreground">
+                              {[forecastInfo.model, forecastInfo.interval].filter(Boolean).join(', ')}
+                            </div>
+                          )}
+                        </>
+                      )}
+
                       {/* Resource lines */}
                       {resourceLines.length > 0 && (
                         <>
@@ -536,15 +718,70 @@ export function MetricsChart({
             />
             
             {/* Main usage area (when not showing per-pod and we have time series data) */}
+            {band && !hiddenSeries.has(OBSERVED_P95) && !hiddenSeries.has(OBSERVED_P99) && (
+              <ReferenceArea
+                y1={band.y1}
+                y2={band.y2}
+                fill={BOUND_COLOR}
+                fillOpacity={0.1}
+                stroke="none"
+                zIndex={50}
+              />
+            )}
+
             {hasTimeSeriesData && !showPerPod && !hiddenSeries.has('usage') && (
               <Area
                 dataKey="usage"
                 type="monotone"
-                fill={`url(#gradient-usage-${resourceType})`}
-                stroke="var(--color-usage)"
+                fill={USAGE_COLOR}
+                fillOpacity={0.2}
+                stroke={USAGE_COLOR}
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4, strokeWidth: 2 }}
+              />
+            )}
+
+            {forecastShown && !hiddenSeries.has(FORECAST_RANGE_KEY) && (
+              <Area
+                dataKey={FORECAST_RANGE_KEY}
+                type="monotone"
+                fill={USAGE_COLOR}
+                fillOpacity={0.12}
+                stroke="none"
+                dot={false}
+                activeDot={false}
+                isAnimationActive={false}
+              />
+            )}
+
+            {forecastShown && !hiddenSeries.has(FORECAST_KEY) && (
+              <Area
+                dataKey={FORECAST_KEY}
+                type="monotone"
+                fill="none"
+                stroke={USAGE_COLOR}
+                strokeWidth={2}
+                strokeDasharray="6 4"
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 2 }}
+                isAnimationActive={false}
+              />
+            )}
+
+            {forecastShown && forecastResult.nowTimestamp !== undefined && (
+              <ReferenceLine
+                x={forecastResult.nowTimestamp}
+                stroke="var(--color-muted-foreground)"
+                strokeOpacity={0.6}
+                strokeDasharray="2 3"
+                zIndex={150}
+                label={{
+                  value: 'now',
+                  position: 'insideTopLeft',
+                  fill: 'var(--color-muted-foreground)',
+                  fontSize: 10,
+                }}
               />
             )}
             

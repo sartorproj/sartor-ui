@@ -1,15 +1,56 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'react-router';
-import { apiClient, tailoringMetricsTarget } from '../lib/api';
-import type { Tailoring, FitProfile } from '../lib/api';
+import { apiClient, ForecastUnavailableError, tailoringMetricsTarget } from '../lib/api';
+import type { Tailoring, FitProfile, TailoringMetricsTarget } from '../lib/api';
 import { ArrowLeft, Scissors, AlertCircle, CheckCircle, XCircle, Clock, ExternalLink, Activity } from 'lucide-react';
-import { MetricsChart, type ResourceLine, type TimeSeriesDataPoint } from '@/components/MetricsChart';
+import { MetricsChart, type MetricsChartProps, type ResourceLine, type TimeSeriesDataPoint } from '@/components/MetricsChart';
+import { hasPercentileBounds, percentileBounds, type PercentileBounds } from '@/lib/metricsChart';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DataTable, type TableColumn } from '@/components/DataTable';
 import { formatMemory, parseCPU, parseMemory } from '@/lib/quantity';
 import * as React from 'react';
+
+const PERCENTILE_STRATEGY = 'percentile';
+
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+type ContainerResourceChartProps = Omit<MetricsChartProps, 'forecast'> & {
+  target: TailoringMetricsTarget;
+  containerName: string;
+  timeRange: string;
+};
+
+/** A container's chart with an on-demand forecast for its current time range. */
+function ContainerResourceChart({ target, containerName, timeRange, ...chartProps }: ContainerResourceChartProps) {
+  const [forecastEnabled, setForecastEnabled] = React.useState(false);
+  const { resourceType } = chartProps;
+  const forecastQuery = useQuery({
+    queryKey: ['prometheus-forecast', target.namespace, target.name, target.cluster, target.kind, containerName, resourceType, timeRange],
+    queryFn: () =>
+      apiClient.getPrometheusForecast(target.namespace, target.name, containerName, resourceType, timeRange, target),
+    enabled: forecastEnabled,
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  return (
+    <MetricsChart
+      {...chartProps}
+      defaultTimeRange={timeRange}
+      forecast={{
+        enabled: forecastEnabled,
+        onToggle: setForecastEnabled,
+        loading: forecastQuery.isLoading,
+        data: forecastQuery.data,
+        error: forecastQuery.error ? errorMessage(forecastQuery.error) : undefined,
+        unavailable: forecastQuery.error instanceof ForecastUnavailableError,
+      }}
+    />
+  );
+}
 
 export default function TailoringDetail() {
   const { namespace, name } = useParams<{ namespace: string; name: string }>();
@@ -25,7 +66,7 @@ export default function TailoringDetail() {
   // Fetch FitProfile to get strategy parameters for lines
   const fitProfileName = tailoring?.spec?.fitProfileRef?.name;
   const fitProfileNamespace = tailoring?.spec?.fitProfileRef?.namespace || tailoring?.metadata?.namespace || 'default';
-  const { data: fitProfile } = useQuery<FitProfile>({
+  const { data: fitProfile, error: fitProfileError } = useQuery<FitProfile>({
     queryKey: ['fitprofile', fitProfileNamespace, fitProfileName],
     queryFn: () => apiClient.getFitProfile(fitProfileNamespace, fitProfileName!),
     enabled: !!fitProfileName,
@@ -243,6 +284,22 @@ export default function TailoringDetail() {
     return rows;
   }) || [];
 
+  const metricsTarget = tailoringMetricsTarget(tailoring);
+  const isPercentile = fitProfile?.spec?.strategy?.trim().toLowerCase() === PERCENTILE_STRATEGY;
+  const boundsFor = (
+    container: NonNullable<NonNullable<Tailoring['status']['lastAnalysis']>['containers']>[number],
+    resourceType: 'cpu' | 'memory'
+  ): { bounds?: PercentileBounds; error?: string } => {
+    const bounds = percentileBounds(container, resourceType);
+    if (!hasPercentileBounds(bounds)) return {};
+    if (isPercentile) return { bounds };
+    // Without the FitProfile the strategy is unknown, so say why the bounds are missing.
+    if (fitProfileError) {
+      return { error: `Observed percentile bounds unavailable: could not load FitProfile: ${errorMessage(fitProfileError)}` };
+    }
+    return {};
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -446,13 +503,15 @@ export default function TailoringDetail() {
             // Resource lines (always available from analysis)
             const cpuResourceLines = getResourceLines(container, 'cpu');
             const memoryResourceLines = getResourceLines(container, 'memory');
+            const cpuBounds = boundsFor(container, 'cpu');
+            const memoryBounds = boundsFor(container, 'memory');
 
             // Check if we have any data to show
-            const hasCPUData = cpuResourceLines.length > 0;
-            const hasMemoryData = memoryResourceLines.length > 0;
+            const hasCPUData = cpuResourceLines.length > 0 || hasPercentileBounds(cpuBounds.bounds);
+            const hasMemoryData = memoryResourceLines.length > 0 || hasPercentileBounds(memoryBounds.bounds);
             const hasPrometheusData = cpuTimeSeries.length > 0 || memoryTimeSeries.length > 0;
 
-            if (!hasCPUData && !hasMemoryData) return null;
+            if (!hasCPUData && !hasMemoryData && !cpuBounds.error && !memoryBounds.error) return null;
 
             return (
               <div key={container.name} className="space-y-6">
@@ -472,32 +531,40 @@ export default function TailoringDetail() {
                 {/* Charts - one per row for better visibility */}
                 <div className="space-y-6">
                   {/* CPU Chart */}
-                  {hasCPUData && (
-                    <MetricsChart
+                  {(hasCPUData || cpuBounds.error) && (
+                    <ContainerResourceChart
+                      target={metricsTarget}
+                      containerName={container.name}
+                      timeRange={cpuTimeRange}
                       title="CPU Usage & Limits"
                       description={`CPU metrics for ${container.name}`}
                       timeSeriesData={cpuTimeSeries}
                       resourceLines={cpuResourceLines}
+                      percentileBounds={cpuBounds.bounds}
+                      percentileBoundsError={cpuBounds.error}
                       resourceType="cpu"
                       height={400}
                       showTimeRangeSelector={true}
-                      defaultTimeRange={cpuTimeRange}
                       onTimeRangeChange={setCpuTimeRange}
                       showPerPodToggle={cpuTimeSeries.length > 0}
                     />
                   )}
 
                   {/* Memory Chart */}
-                  {hasMemoryData && (
-                    <MetricsChart
+                  {(hasMemoryData || memoryBounds.error) && (
+                    <ContainerResourceChart
+                      target={metricsTarget}
+                      containerName={container.name}
+                      timeRange={memoryTimeRange}
                       title="Memory Usage & Limits"
                       description={`Memory metrics for ${container.name}`}
                       timeSeriesData={memoryTimeSeries}
                       resourceLines={memoryResourceLines}
+                      percentileBounds={memoryBounds.bounds}
+                      percentileBoundsError={memoryBounds.error}
                       resourceType="memory"
                       height={400}
                       showTimeRangeSelector={true}
-                      defaultTimeRange={memoryTimeRange}
                       onTimeRangeChange={setMemoryTimeRange}
                       showPerPodToggle={memoryTimeSeries.length > 0}
                     />
